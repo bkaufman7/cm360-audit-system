@@ -1547,6 +1547,23 @@ function sendDailySummaryFailover() {
 	}
 }
 
+// Force resend of daily summary: clears sent flag and requires ALL configs complete (no placeholders)
+function forceResendSummaryEmail() {
+	try {
+		const cache = CacheService.getScriptCache();
+		cache.remove('CM360_SUMMARY_SENT');
+		Logger.log('[Summary Force] Cleared sent flag; attempting resend.');
+		const sent = attemptSendDailySummary_({ allowPlaceholders: false, reason: 'Manual force resend' });
+		if (!sent) {
+			Logger.log('[Summary Force] Resend skipped (not all configs complete or lock contention).');
+		} else {
+			Logger.log('[Summary Force] Summary resent successfully.');
+		}
+	} catch (e) {
+		Logger.log('forceResendSummaryEmail error: ' + e.message);
+	}
+}
+
 // Preview the single summary email without sending; synthesizes from configs if no cache
 function previewDailySummaryNow() {
 	let results = buildSummaryResultSet_({ allowPlaceholders: true });
@@ -1697,6 +1714,7 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
  let header = [];
  const processedIds = new Set(); // track originals we've consumed (and alternates) to avoid duplicates
 	const headerIssues = []; // collect per-file schema/order issues
+ const seenRows = new Set(); // track unique rows to prevent duplicates across files
 
  while (files.hasNext()) {
  const file = files.next();
@@ -2055,20 +2073,48 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
 	 if (header.length > 0) {
 		 mergedSheet.getRange(1, 1, 1, header.length).setValues([header]);
 		if (bodyRows.length > 0) {
+				// Find column indices for deduplication key
+				const placementIdIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement ID'));
+				const dateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Date'));
+				const impressionsIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Impressions'));
+				const clicksIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Clicks'));
+				
+				// Deduplicate even the first file (in case it has internal duplicates)
+				const uniqueBodyRows = bodyRows.filter(r => {
+					const key = [
+						String(r[placementIdIdx] || ''),
+						String(r[dateIdx] || ''),
+						String(r[impressionsIdx] || ''),
+						String(r[clicksIdx] || '')
+					].join('|');
+					
+					if (seenRows.has(key)) {
+						return false;
+					}
+					seenRows.add(key);
+					return true;
+				});
+				
+				if (uniqueBodyRows.length < bodyRows.length) {
+					Logger.log(`[${configName}] Deduplication: ${bodyRows.length - uniqueBodyRows.length} duplicate row(s) removed from first file`);
+				}
+				
 				// Normalize rows to header width to prevent mismatches
-				const normalized = bodyRows.map(r => {
+				const normalized = uniqueBodyRows.map(r => {
 						const arr = r.slice(0, header.length);
 						while (arr.length < header.length) arr.push('');
 						return arr;
 				});
-				 try {
-				 mergedSheet.getRange(2, 1, normalized.length, header.length).setValues(normalized);
-				 } catch (e) {
-					 const sourceName = (spreadsheet && typeof spreadsheet.getName === 'function') ? spreadsheet.getName() : file.getName();
-				 const dataCols = (normalized && normalized[0]) ? normalized[0].length : 0;
-					 const headerCols = header.length;
-					 Logger.log(`[${configName}] setValues error while writing first data block from temp daily report "${sourceName}": ${e.message} (dataCols=${dataCols}, headerCols=${headerCols})`);
-					 throw new Error(`Temp Daily Report: ${sourceName} — ${e.message} (dataCols=${dataCols}, headerCols=${headerCols})`);
+				 if (normalized.length > 0) {
+					 try {
+					 mergedSheet.getRange(2, 1, normalized.length, header.length).setValues(normalized);
+					 } catch (e) {
+						 const sourceName = (spreadsheet && typeof spreadsheet.getName === 'function') ? spreadsheet.getName() : file.getName();
+					 const dataCols = (normalized && normalized[0]) ? normalized[0].length : 0;
+						 const headerCols = header.length;
+						 Logger.log(`[${configName}] setValues error while writing first data block from temp daily report "${sourceName}": ${e.message} (dataCols=${dataCols}, headerCols=${headerCols})`);
+						 throw new Error(`Temp Daily Report: ${sourceName} — ${e.message} (dataCols=${dataCols}, headerCols=${headerCols})`);
+					 }
 				 }
 			 }
 		 headerWritten = true;
@@ -2087,19 +2133,49 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
  const startRow = mergedSheet.getLastRow() + 1;
  const rowsToAdd = cleanedData.slice(1);
  if (rowsToAdd.length > 0 && header.length > 0) {
-	 const normalized = rowsToAdd.map(r => {
+	 // Deduplicate rows using composite key: Placement ID + Date + Impressions + Clicks
+	 // This prevents duplicate rows when multiple report files contain the same data
+	 const placementIdIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Placement ID'));
+	 const dateIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Date'));
+	 const impressionsIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Impressions'));
+	 const clicksIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Clicks'));
+	 
+	 const uniqueRows = rowsToAdd.filter(r => {
+		 // Build composite key for deduplication
+		 const key = [
+			 String(r[placementIdIdx] || ''),
+			 String(r[dateIdx] || ''),
+			 String(r[impressionsIdx] || ''),
+			 String(r[clicksIdx] || '')
+		 ].join('|');
+		 
+		 if (seenRows.has(key)) {
+			 return false; // Skip duplicate
+		 }
+		 seenRows.add(key);
+		 return true;
+	 });
+	 
+	 if (uniqueRows.length < rowsToAdd.length) {
+		 Logger.log(`[${configName}] Deduplication: ${rowsToAdd.length - uniqueRows.length} duplicate row(s) skipped from ${file.getName()}`);
+	 }
+	 
+	 const normalized = uniqueRows.map(r => {
 		 const arr = r.slice(0, header.length);
 		 while (arr.length < header.length) arr.push('');
 		 return arr;
 	 });
-	 try {
-		mergedSheet.getRange(startRow, 1, normalized.length, header.length).setValues(normalized);
-	 } catch (e) {
-		 const sourceName = (spreadsheet && typeof spreadsheet.getName === 'function') ? spreadsheet.getName() : file.getName();
-		const dataCols = (normalized && normalized[0]) ? normalized[0].length : 0;
-		 const headerCols = header.length;
-		 Logger.log(`[${configName}] setValues error while appending from temp daily report "${sourceName}": ${e.message} (dataCols=${dataCols}, headerCols=${headerCols})`);
-		 throw new Error(`Temp Daily Report: ${sourceName} — ${e.message} (dataCols=${dataCols}, headerCols=${headerCols})`);
+	 
+	 if (normalized.length > 0) {
+		 try {
+			mergedSheet.getRange(startRow, 1, normalized.length, header.length).setValues(normalized);
+		 } catch (e) {
+			 const sourceName = (spreadsheet && typeof spreadsheet.getName === 'function') ? spreadsheet.getName() : file.getName();
+			const dataCols = (normalized && normalized[0]) ? normalized[0].length : 0;
+			 const headerCols = header.length;
+			 Logger.log(`[${configName}] setValues error while appending from temp daily report "${sourceName}": ${e.message} (dataCols=${dataCols}, headerCols=${headerCols})`);
+			 throw new Error(`Temp Daily Report: ${sourceName} — ${e.message} (dataCols=${dataCols}, headerCols=${headerCols})`);
+		 }
 	 }
  } else {
  Logger.log(`[${configName}] No data rows found in ${fileName} after header; skipping.`);
@@ -2398,14 +2474,19 @@ function executeAudit(config, preloaded) {
  });
 
  // Reorder merged sheet preserving sorted flagged rows at top only
- // FIXED: Use allData (original) instead of re-reading from sheet to avoid duplication
- const allDataRows = allData.slice(headerRowIndex + 1); // Exclude header row
+ // CRITICAL: Use the ORIGINAL allData snapshot (before any flag column writes) to avoid duplicates
+ // The issue was: after updating flag cells in-memory, allData contained flag text but we then
+ // re-read from sheet which also had flags, causing double-inclusion of flagged rows
+ const originalDataRows = allData.slice(headerRowIndex + 1); // Original snapshot, no flag overwrites yet
 
  // Build reordered flagged list
  const reorderedFlagged = flaggedRows;
 
-// Remaining unflagged rows (filter from ORIGINAL data, not updated sheet)
- const reorderedUnflagged = allDataRows.filter(r => !flaggedIDs.has(r[fullCol.PlacementID]));	if (reorderedFlagged.length === 0) {
+ // Remaining unflagged rows: filter from ORIGINAL data snapshot using placement IDs
+ const reorderedUnflagged = originalDataRows.filter(r => {
+   const pid = r[fullCol.PlacementID];
+   return !flaggedIDs.has(pid);
+ });	if (reorderedFlagged.length === 0) {
 		// No flags: decide whether we would send based on recipients setting
 		const configRecipients = recipientsData[config.name];
 		const withhold = !!(configRecipients && configRecipients.withholdNoFlagEmails);
@@ -2439,10 +2520,22 @@ function executeAudit(config, preloaded) {
  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
 
  if (reorderedFlagged.length > 0) {
-	 sheet.getRange(2, 1, reorderedFlagged.length, headers.length).setValues(reorderedFlagged);
+	 // Normalize rows to match header width before writing
+	 const normalizedFlagged = reorderedFlagged.map(r => {
+		 const arr = r.slice(0, headers.length);
+		 while (arr.length < headers.length) arr.push('');
+		 return arr;
+	 });
+	 sheet.getRange(2, 1, normalizedFlagged.length, headers.length).setValues(normalizedFlagged);
  }
  if (reorderedUnflagged.length > 0) {
-	 sheet.getRange(reorderedFlagged.length + 2, 1, reorderedUnflagged.length, headers.length).setValues(reorderedUnflagged);
+	 // Normalize unflagged rows to match header width
+	 const normalizedUnflagged = reorderedUnflagged.map(r => {
+		 const arr = r.slice(0, headers.length);
+		 while (arr.length < headers.length) arr.push('');
+		 return arr;
+	 });
+	 sheet.getRange(reorderedFlagged.length + 2, 1, normalizedUnflagged.length, headers.length).setValues(normalizedUnflagged);
  }
  // Flush moved to end of formatting section for better performance
 
@@ -8772,15 +8865,29 @@ const externalSpreadsheet = openSpreadsheetById_(EXTERNAL_CONFIG_SHEET_ID);
  Logger.log(`" Found Recipients sheet: ${RECIPIENTS_SHEET_NAME}`);
  
  const defaultRecipients = [
- ['PST01', ADMIN_EMAIL, '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['PST02', 'fvariath@horizonmedia.com', ADMIN_EMAIL, 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['PST03', 'dmaestre@horizonmedia.com', ADMIN_EMAIL, 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NEXT01', 'bosborne@horizonmedia.com, mmassaroni@horizonmedia.com', ADMIN_EMAIL, 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NEXT02', 'rschaff@horizonmedia.com, mmassaroni@horizonmedia.com, jwong@horizonmedia.com', ADMIN_EMAIL, 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NEXT03', 'szeterberg@horizonmedia.com, mmassaroni@horizonmedia.com, jwong@horizonmedia.com', ADMIN_EMAIL, 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['SPTM01', 'spectrum_adops@horizonmedia.com', ADMIN_EMAIL, 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NFL01', 'NFL_AdOps@horizonmedia.com, sbermolone@horizonmedia.com', ADMIN_EMAIL, 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['ENT01', 'sremick@horizonmedia.com, cali@horizonmedia.com', ADMIN_EMAIL, 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')]
+ ['PST01', 'evschneider@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['PST02', 'fvariath@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['PST03', 'dmaestre@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['NEXTBO01', 'Seaworld_AdOps@horizon-next.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['NEXTRS01', 'UHG_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['NEXTSZ01', 'Goddard_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['SPTM01', 'spectrum_adops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['NFL01', 'NFL_AdOps@horizonmedia.com, sbermolone@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['ENT01', 'entertainmentadops@horizonmedia.com, jgonzalez@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['MSG01', 'MSG_Adops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['AMC01', 'AMC_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['OMGA01', 'Omega_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['NDC01', 'NDC_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['GMNR01', 'RegeneronAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['CAP01', 'capitaloneadops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['BTB01', 'primobrands_campaignmanagement@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['DHC01', 'DHC_CampaignMgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['STAR01', 'starz_campaignmgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['CADH01', 'Hondas_CampaignMgmt@horizonmedia.com, CSH_campaignmgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['LION01', 'LG_CampaignManagement@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['NEXTSD01', 'BKaufman@horizonmedia.com, sleepnumber_adops@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['NEXTCD01', 'adtalemAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
+ ['WRI01', 'ImpossibleAdOps@horizonmedia.com, RevlonAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')]
  ];
  
  // Clear existing data and add defaults
