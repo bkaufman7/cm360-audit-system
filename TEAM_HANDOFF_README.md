@@ -1,7 +1,7 @@
 # CM360 Daily Audit System - Team Handoff Documentation
 
 **Last Updated:** October 29, 2025  
-**Prepared By:** Evan Schneider (evschneider@horizonmedia.com)  
+**Prepared By:** Brian Kaufman (bkaufman@horizonmedia.com)  
 **Repository:** https://github.com/evan-schneider/cm360-audit-system  
 **Branch:** integrate-2025-09-29
 
@@ -70,7 +70,7 @@ The CM360 Daily Audit System automatically:
 
 ### 1. Update Admin Email (ONLY Required Change)
 
-The current admin email is **evschneider@horizonmedia.com**. This should be changed before Evan's departure.
+The current admin email is **bkaufman@horizonmedia.com**. This should be changed before Evan's departure.
 
 **Where to Update:**
 
@@ -80,7 +80,7 @@ The current admin email is **evschneider@horizonmedia.com**. This should be chan
 3. Open **Code.js** file
 4. Find line ~29 in the ADMIN_EMAIL constant:
    ```javascript
-   return 'evschneider@horizonmedia.com';
+   return 'bkaufman@horizonmedia.com';
    ```
 5. Change to:
    ```javascript
@@ -315,7 +315,7 @@ The Admin Controls menu is organized into functional groups:
 
 ---
 
-#### ?? CM360 Config Builder…
+#### ?? CM360 Config Builderï¿½
 **Purpose:** Guided wizard for adding new configurations  
 **What it does:**
 - Opens interactive sidebar
@@ -521,7 +521,7 @@ The Admin Controls menu is organized into functional groups:
 
 ---
 
-#### ?? Silent Withhold Check…
+#### ?? Silent Withhold Checkï¿½
 **Purpose:** Test email withhold logic  
 **What it does:**
 - Pick a config
@@ -557,7 +557,7 @@ The Admin Controls menu is organized into functional groups:
 
 ---
 
-#### ?? Test Thresholds…
+#### ?? Test Thresholdsï¿½
 **Purpose:** Debug threshold flagging  
 **What it does:**
 - Pick a config
@@ -640,7 +640,7 @@ The Admin Controls menu is organized into functional groups:
 
 ---
 
-#### ?? About Admin Controls…
+#### ?? About Admin Controlsï¿½
 **Purpose:** Help documentation  
 **What it does:**
 - Shows this reference guide
@@ -879,7 +879,7 @@ Thresholds are **minimum volume requirements**, not percentage tolerances. A row
 | Config Name | Which config to audit | `ACMECorp` |
 | Audit Date | Date of data to audit | `2025-10-28` |
 | Status | Pending/Completed/Failed | `Pending` |
-| Requested By | Who submitted request | `evschneider@horizonmedia.com` |
+| Requested By | Who submitted request | `bkaufman@horizonmedia.com` |
 
 **How It Works:**
 1. Add row to Requests sheet (or use Admin Controls > ?? Create Audit Request)
@@ -1028,7 +1028,6 @@ Thresholds are **minimum volume requirements**, not percentage tolerances. A row
 **9:25 AM EST**
 1. `sendDailySummaryFailover` trigger fires
 2. Sends consolidated summary email to:
-   - evschneider@horizonmedia.com (UPDATE THIS!)
    - bmuller@horizonmedia.com
    - bkaufman@horizonmedia.com
    - ewarburton@horizonmedia.com
@@ -1923,7 +1922,6 @@ Daily Audits
 ### Summary Email Recipients (Update These!)
 
 Current distribution list (Code.js line ~1061):
-- evschneider@horizonmedia.com (Consider updating to new team lead)
 - bmuller@horizonmedia.com
 - bkaufman@horizonmedia.com
 - ewarburton@horizonmedia.com

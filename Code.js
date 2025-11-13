@@ -1,4 +1,6 @@
 
+// Global cache for audit configs (declared early to avoid TDZ in manual runs)
+var auditConfigsCache_ = null;
 
 // === CONFIGURATION CONSTANTS ===
 // Update EXTERNAL_CONFIG_SHEET_ID with the ID of the helper spreadsheet once it is created.
@@ -1582,19 +1584,22 @@ function previewDailySummaryNow() {
 }
 
 function exportSheetAsExcel(spreadsheetId, filename) {
- const url = `https://docs.google.com/feeds/download/spreadsheets/Export?key=${spreadsheetId}&exportFormat=xlsx`;
- const token = ScriptApp.getOAuthToken();
+	// Use modern export endpoint and ensure recent writes are flushed first
+	try { SpreadsheetApp.flush(); } catch (e) { Logger.log('export flush warning: ' + e.message); }
+	const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=xlsx`;
+	const token = ScriptApp.getOAuthToken();
 
- const response = UrlFetchApp.fetch(url, {
- headers: { 'Authorization': `Bearer ${token}` },
- muteHttpExceptions: true
- });
+	const response = UrlFetchApp.fetch(url, {
+		headers: { 'Authorization': `Bearer ${token}` },
+		muteHttpExceptions: true
+	});
 
- if (response.getResponseCode() !== 200) {
- throw new Error(` Failed to export sheet. HTTP ${response.getResponseCode()}`);
- }
+	const code = response.getResponseCode();
+	if (code !== 200) {
+		throw new Error(`Failed to export sheet. HTTP ${code}`);
+	}
 
- return response.getBlob().setName(filename);
+	return response.getBlob().setName(filename);
 }
 
 // === GMAIL & DRIVE FILE FETCH ===
@@ -2075,15 +2080,32 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
 		if (bodyRows.length > 0) {
 				// Find column indices for deduplication key
 				const placementIdIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement ID'));
-				const dateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Date'));
+				const startDateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement Start Date'));
+				const endDateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement End Date'));
+				const creativeIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Creative'));
 				const impressionsIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Impressions'));
 				const clicksIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Clicks'));
 				
 				// Deduplicate even the first file (in case it has internal duplicates)
+				// Normalize dates to remove time component (some dates have timestamps, some don't)
+				const normalizeDate = (val) => {
+					if (!val) return '';
+					if (val instanceof Date) return val.toISOString().split('T')[0];
+					const str = String(val);
+					// If it looks like a date with time, parse it and extract just the date
+					if (str.includes(':') || str.includes('/')) {
+						const parsed = new Date(str);
+						if (!isNaN(parsed.getTime())) return parsed.toISOString().split('T')[0];
+					}
+					return str;
+				};
+				
 				const uniqueBodyRows = bodyRows.filter(r => {
 					const key = [
 						String(r[placementIdIdx] || ''),
-						String(r[dateIdx] || ''),
+						normalizeDate(r[startDateIdx]),
+						normalizeDate(r[endDateIdx]),
+						String(r[creativeIdx] || ''),
 						String(r[impressionsIdx] || ''),
 						String(r[clicksIdx] || '')
 					].join('|');
@@ -2133,18 +2155,35 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
  const startRow = mergedSheet.getLastRow() + 1;
  const rowsToAdd = cleanedData.slice(1);
  if (rowsToAdd.length > 0 && header.length > 0) {
-	 // Deduplicate rows using composite key: Placement ID + Date + Impressions + Clicks
+	 // Deduplicate rows using composite key: Placement ID + Placement Start Date + Placement End Date + Creative + Impressions + Clicks
 	 // This prevents duplicate rows when multiple report files contain the same data
 	 const placementIdIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Placement ID'));
-	 const dateIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Date'));
+	 const startDateIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Placement Start Date'));
+	 const endDateIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Placement End Date'));
+	 const creativeIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Creative'));
 	 const impressionsIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Impressions'));
 	 const clicksIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Clicks'));
 	 
 	 const uniqueRows = rowsToAdd.filter(r => {
-		 // Build composite key for deduplication
+		 // Build composite key for deduplication using Placement ID + Placement Start Date + Placement End Date + Impressions + Clicks
+		 // Normalize dates to remove time component (some dates have timestamps, some don't)
+		 const normalizeDate = (val) => {
+			 if (!val) return '';
+			 if (val instanceof Date) return val.toISOString().split('T')[0];
+			 const str = String(val);
+			 // If it looks like a date with time, parse it and extract just the date
+			 if (str.includes(':') || str.includes('/')) {
+				 const parsed = new Date(str);
+				 if (!isNaN(parsed.getTime())) return parsed.toISOString().split('T')[0];
+			 }
+			 return str;
+		 };
+		 
 		 const key = [
 			 String(r[placementIdIdx] || ''),
-			 String(r[dateIdx] || ''),
+			 normalizeDate(r[startDateIdx]),
+			 normalizeDate(r[endDateIdx]),
+			 String(r[creativeIdx] || ''),
 			 String(r[impressionsIdx] || ''),
 			 String(r[clicksIdx] || '')
 		 ].join('|');
@@ -2412,7 +2451,6 @@ function executeAudit(config, preloaded) {
  if (hasMinVolumeForClicks && clicks > impressions && 
  !isPlacementExcludedForFlag(exclusionsData, configName, placementId, 'clicks_greater_than_impressions', placementName, siteName)) {
  flags.push('Clicks > Impressions');
- Logger.log(`🚩 [FLAG ADDED] ${configName} - ${placementName}: Clicks > Impressions (${clicks} clicks >= ${appliedThresholdForClicks} threshold)`);
  }
  
  // Out of flight dates check
@@ -2453,6 +2491,13 @@ function executeAudit(config, preloaded) {
  flaggedRows.push(row);
  flaggedIDs.add(row[fullCol.PlacementID]);
  }
+ }
+
+ // Log flagging summary
+ if (flaggedRows.length > 0) {
+	 Logger.log(`🚩 [${configName}] Flagging complete: ${flaggedRows.length} flagged rows, ${flaggedIDs.size} unique placements`);
+ } else {
+	 Logger.log(`✅ [${configName}] No flags detected`);
  }
 
  const updatedDataRows = allData.slice(headerRowIndex + 1).map(row => {
@@ -3002,7 +3047,11 @@ function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsDat
  return;
  }
 
- const subjectDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+	const subjectDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+
+	// Determine attachment mode per config (Recipients sheet col G): FULL | FLAGGED_ONLY
+	const rec = recipientsData && recipientsData[configName] ? recipientsData[configName] : null;
+	const attachmentMode = rec && rec.attachmentMode ? String(rec.attachmentMode).toUpperCase() : 'FULL';
 
  const truncate = (text, maxLen = 80) => {
  const safe = String(text || '').trim();
@@ -3011,7 +3060,31 @@ function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsDat
 
 	const subject = `⚠️ CM360 Daily Audit: Issues Detected (${configName} - ${subjectDate})`;
 
- const xlsxBlob = exportSheetAsExcel(sheetId, `CM360_DailyAudit_${configName}_${subjectDate}.xlsx`);
+	// Build attachment depending on mode
+	let xlsxBlob;
+	if (attachmentMode === 'FLAGGED_ONLY') {
+		// Create a lightweight workbook with only flagged rows (same columns as emailRows)
+		const tmp = SpreadsheetApp.create(`CM360_Flagged_${configName}_${subjectDate}`);
+		const sh = tmp.getSheets()[0];
+		const header = ['Advertiser','Campaign','Site (CM360)','Placement','Placement ID','Placement Start Date','Placement End Date','Creative','Impressions','Clicks','Flag(s)'];
+		// Write header + rows
+		const values = [header].concat(emailRows.map(r => [
+			r[0], r[1], r[2], r[3], r[4],
+			formatDate(new Date(r[5]), 'yyyy-MM-dd'),
+			formatDate(new Date(r[6]), 'yyyy-MM-dd'),
+			r[7], r[8], r[9], r[10]
+		]));
+		sh.clear();
+		sh.getRange(1,1,values.length, header.length).setValues(values);
+		// Ensure data is committed before export
+		try { SpreadsheetApp.flush(); } catch (e) { Logger.log('flush warning (flagged-only export): ' + e.message); }
+		try { Utilities.sleep(150); } catch (e) {}
+		// Export and clean up
+		xlsxBlob = exportSheetAsExcel(tmp.getId(), `CM360_DailyAudit_${configName}_${subjectDate}_FLAGGED_ONLY.xlsx`);
+		try { DriveApp.getFileById(tmp.getId()).setTrashed(true); } catch (e) {}
+	} else {
+		xlsxBlob = exportSheetAsExcel(sheetId, `CM360_DailyAudit_${configName}_${subjectDate}.xlsx`);
+	}
 
  const plural = (count, singular, plural) => count === 1 ? singular : plural;
 	const totalFlagged = flaggedRows.length;
@@ -3099,7 +3172,7 @@ ${truncateNotice}
 		Logger.log(`[${configName}] Email body size ${payloadSize.totalBytes}B with ${rowsToInclude} rows (limit ${EMAIL_BODY_BYTE_LIMIT}B).`);
 	}
 
-	const emailSuccess = safeSendEmail({
+		const emailSuccess = safeSendEmail({
 		to: resolveRecipients(configName, recipientsData),
 		cc: resolveCc(configName, recipientsData),
 		subject,
@@ -3450,15 +3523,14 @@ function runDailyAuditsBatch5() {
 }
 
 function runDailyAuditsBatch6() {
-const batches = getAuditConfigBatches(BATCH_SIZE);
-runAuditBatch(batches[5]);
+ const batches = getAuditConfigBatches(BATCH_SIZE);
+ runAuditBatch(batches[5]);
 }
 
 function runDailyAuditsBatch7() {
-const batches = getAuditConfigBatches(BATCH_SIZE);
-runAuditBatch(batches[6]);
+ const batches = getAuditConfigBatches(BATCH_SIZE);
+ runAuditBatch(batches[6]);
 }
-
 
 function runDailyAuditsBatch8() {
  const batches = getAuditConfigBatches(BATCH_SIZE);
@@ -3483,6 +3555,11 @@ function runDailyAuditsBatch11() {
 function runDailyAuditsBatch12() {
  const batches = getAuditConfigBatches(BATCH_SIZE);
  runAuditBatch(batches[11]);
+}
+
+function runDailyAuditsBatch13() {
+ const batches = getAuditConfigBatches(BATCH_SIZE);
+ runAuditBatch(batches[12], true);
 }
 
 function generateMissingBatchStubs() {
@@ -3768,6 +3845,7 @@ function createAuditMenu(ui) {
  .addItem('📄  Thresholds (create/open)', 'getOrCreateThresholdsSheet')
  .addItem('🚫  Exclusions (create/open)', 'getOrCreateExclusionsSheet')
  .addItem('📧  Recipients (create/open)', 'getOrCreateRecipientsSheet')
+ .addItem('🔃  Refresh Recipients (Attachment Mode)', 'refreshRecipientsAttachmentMode')
  .addItem('🧩  CM360 Config Builder…', 'showConfigCreationHelper')
  .addSeparator()
 // External config (lean)
@@ -3813,6 +3891,7 @@ function getAdminControlsHelpItems() {
 		{ label: '📄  Thresholds (create/open)', fn: 'getOrCreateThresholdsSheet', desc: 'Opens or creates the Audit Thresholds sheet and applies formatting/validations.' },
 		{ label: '🚫  Exclusions (create/open)', fn: 'getOrCreateExclusionsSheet', desc: 'Opens or creates the Audit Exclusions sheet with protected Placement Name column and validations.' },
 		{ label: '📧  Recipients (create/open)', fn: 'getOrCreateRecipientsSheet', desc: 'Opens or creates the Audit Recipients sheet to manage To/CC and withhold settings.' },
+		{ label: '🔃  Refresh Recipients (Attachment Mode)', fn: 'refreshRecipientsAttachmentMode', desc: 'Adds/refreshes the Attachment Mode column (FULL | FLAGGED_ONLY) and instructions on Admin and External sheets.' },
 		{ label: '🧩  CM360 Config Builder…', fn: 'showConfigCreationHelper', desc: 'Guided UI to add a new CM360 audit config; provides next steps and admin hints.' },
 		{ label: '📤  Sync TO External Config', fn: 'syncToExternalConfig', desc: 'Copies Admin sheet tabs (Thresholds/Recipients/Exclusions/Requests) to the external spreadsheet.' },
 		{ label: '📥  Sync FROM External Config', fn: 'syncFromExternalConfig', desc: 'Pulls latest config from the external spreadsheet into Admin tabs.' },
@@ -4353,15 +4432,26 @@ function refreshExternalConfigInstructions(options) {
 
 		// AUDIT RECIPIENTS
 		let rc = ss.getSheetByName(RECIPIENTS_SHEET_NAME);
-		const rcHeaders = ['Config Name', 'Primary Recipients', 'CC Recipients', 'Active', 'Withhold No-Flag Emails', 'Last Updated', '', 'INSTRUCTIONS'];
+		const rcHeaders = ['Config Name', 'Primary Recipients', 'CC Recipients', 'Active', 'Withhold No-Flag Emails', 'Last Updated', 'Attachment Mode', 'INSTRUCTIONS'];
 		if (!rc) rc = ss.insertSheet(RECIPIENTS_SHEET_NAME);
 		rc.getRange(1, 1, 1, rcHeaders.length).setValues([rcHeaders]);
-		try { rc.getRange(1, 1, 1, 6).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff'); } catch(e) {}
-		try { rc.autoResizeColumns(1, 6); } catch(e) {}
+		try { rc.getRange(1, 1, 1, 7).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff'); } catch(e) {}
+		try { rc.autoResizeColumns(1, 7); } catch(e) {}
 		const recipientsInstructions = _buildRecipientsInstructions_();
 		_ensureInstructionsOnSheet_(rc, recipientsInstructions);
 		// Write exact builder array into fixed INSTRUCTIONS columns (H=8)
 		writeInstructionsToFixedColumns(rc, 8, 8, recipientsInstructions);
+
+		// Add or refresh data validation for Attachment Mode column (G)
+		try {
+			const attachRange = rc.getRange('G2:G');
+			const attachRule = SpreadsheetApp.newDataValidation()
+				.requireValueInList(['FULL', 'FLAGGED_ONLY'])
+				.setAllowInvalid(false)
+				.setHelpText('Choose FULL to attach all rows (default) or FLAGGED_ONLY to attach only flagged rows.')
+				.build();
+			attachRange.setDataValidation(attachRule);
+		} catch (e) { Logger.log('Attachment Mode validation error (external): ' + e.message); }
 
 		// AUDIT EXCLUSIONS
 		let ex = ss.getSheetByName(EXCLUSIONS_SHEET_NAME);
@@ -4575,6 +4665,25 @@ function updateExternalConfigInstructions() {
 			'Check the execution logs for more details.',
 			ui.ButtonSet.OK
 		);
+	}
+}
+
+// Idempotent helper to refresh the Recipients sheet with Attachment Mode on Admin and External config
+function refreshRecipientsAttachmentMode() {
+	const ui = SpreadsheetApp.getUi();
+	try {
+		// Admin sheet: ensure recipients sheet exists and upgraded
+		const adminSheet = getOrCreateRecipientsSheet();
+		try { _ensureInstructionsOnSheet_(adminSheet, _buildRecipientsInstructions_()); } catch (e) { Logger.log('Admin recipients instructions ensure failed: ' + e.message); }
+
+		// External sheet: update headers/instructions and validation in fixed columns
+		try { refreshExternalConfigInstructions({ silent: true }); } catch (e) { Logger.log('External recipients refresh failed: ' + e.message); }
+
+		// Feedback
+		ui.alert('Recipients Refreshed', 'Attachment Mode column and instructions have been refreshed on Admin and External sheets. No table data was modified.', ui.ButtonSet.OK);
+	} catch (err) {
+		Logger.log('refreshRecipientsAttachmentMode error: ' + err.message);
+		ui.alert('Refresh Failed', 'Could not refresh Recipients sheets: ' + err.message, ui.ButtonSet.OK);
 	}
 }
 
@@ -5350,7 +5459,7 @@ function getOrCreateRecipientsSheet() {
  'Active',
  'Withhold No-Flag Emails',
  'Last Updated',
- '',
+ 'Attachment Mode',
  'INSTRUCTIONS'
  ];
  
@@ -5358,7 +5467,7 @@ function getOrCreateRecipientsSheet() {
  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
  
  // Format the main headers
- const mainHeaderRange = sheet.getRange(1, 1, 1, 6);
+ const mainHeaderRange = sheet.getRange(1, 1, 1, 7);
  mainHeaderRange.setFontWeight('bold');
  mainHeaderRange.setBackground('#4285f4');
  mainHeaderRange.setFontColor('#ffffff');
@@ -5391,6 +5500,17 @@ function getOrCreateRecipientsSheet() {
  
  withholdRange.setDataValidation(withholdRule);
 
+ // Add dropdown validation for Attachment Mode column (column G) - starting from row 2
+ try {
+ 	const attachRange = sheet.getRange('G2:G');
+ 	const attachRule = SpreadsheetApp.newDataValidation()
+ 		.requireValueInList(['FULL', 'FLAGGED_ONLY'])
+ 		.setAllowInvalid(false)
+ 		.setHelpText('Choose FULL to attach all rows (default) or FLAGGED_ONLY to attach only flagged rows.')
+ 		.build();
+ 	attachRange.setDataValidation(attachRule);
+ } catch (e) { Logger.log('Attachment Mode validation error (admin): ' + e.message); }
+
  // Conditional formatting: if Active (col D) is FALSE, shade A..D light red; skip blank rows
  try {
 	 const rules = sheet.getConditionalFormatRules() || [];
@@ -5410,6 +5530,7 @@ function getOrCreateRecipientsSheet() {
  ['CC Recipients:', 'CC email addresses (comma-separated if multiple)'],
  ['Active:', 'TRUE to use these recipients, FALSE to disable'],
  ['Withhold No-Flag Emails:', 'TRUE to skip emails when 0 flags found, FALSE to always send emails'],
+ ['Attachment Mode:', 'FULL = attach full merged workbook (default). FLAGGED_ONLY = attach only the flagged rows as Excel.'],
  ['Last Updated:', 'Automatically updated when you modify recipients'],
  ['', ''],
  ['Delivery Mode:', `${getStagingMode_() === 'Y' ? 'STAGING (all audit emails currently sending to admin only)' : 'PRODUCTION (all audit emails currently sending to recipients)'}`],
@@ -5428,25 +5549,45 @@ function getOrCreateRecipientsSheet() {
  const instructionsRange = sheet.getRange(2, 8, instructions.length, 2);
  instructionsRange.setFontSize(10);
  instructionsRange.setVerticalAlignment('top');
-
- // Conditional formatting: if Active (col K) is FALSE, shade A..J light red
- try {
-	 const rules = sheet.getConditionalFormatRules() || [];
-	 const filtered = rules.filter(r => {
-		 try { const bc = r.getBooleanCondition(); if (!bc) return true; const v = bc.getCriteriaValues()||[]; return String((v[0]||'')).toUpperCase() !== '=$K2=FALSE'; } catch(e){ return true; }
-	 });
-	 const inactiveRange = sheet.getRange(2, 1, Math.max(sheet.getMaxRows()-1,1), 10);
-	 const inactiveRule = SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$K2=FALSE').setBackground('#f8d7da').setRanges([inactiveRange]).build();
-	 filtered.push(inactiveRule);
-	 sheet.setConditionalFormatRules(filtered);
- } catch (e) { Logger.log('Exclusions inactive shading error: ' + e.message); }
  
  // Auto-resize columns
- sheet.autoResizeColumns(1, 6);
+ sheet.autoResizeColumns(1, 7);
  
  Logger.log('Recipients sheet created successfully');
  } else {
  Logger.log(`Recipients sheet already exists: ${RECIPIENTS_SHEET_NAME}`);
+ 
+ // Ensure the new Attachment Mode column (G) exists with header, formatting, and validation
+ try {
+ 	const headerValues = sheet.getRange(1, 1, 1, Math.max(8, sheet.getLastColumn())).getValues()[0];
+ 	const hasAttachmentMode = headerValues.some(h => String(h || '').trim().toLowerCase() === 'attachment mode');
+ 	if (!hasAttachmentMode) {
+ 		// Insert a new column G (after F) and set header
+ 		try { sheet.insertColumnAfter(6); } catch (e) { Logger.log('Insert column after F failed (may already exist): ' + e.message); }
+ 		try {
+ 			sheet.getRange(1, 7).setValue('Attachment Mode');
+ 			// Re-apply main header formatting for A..G
+ 			sheet.getRange(1, 1, 1, 7).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff');
+ 			// Ensure INSTRUCTIONS header at H styled
+ 			sheet.getRange(1, 8).setValue('INSTRUCTIONS').setFontWeight('bold').setBackground('#ff9900').setFontColor('#ffffff');
+ 		} catch (e) { Logger.log('Setting header/format for Attachment Mode failed: ' + e.message); }
+ 		// Add validation for G2:G
+ 		try {
+ 			const attachRange = sheet.getRange('G2:G');
+ 			const attachRule = SpreadsheetApp.newDataValidation()
+ 				.requireValueInList(['FULL', 'FLAGGED_ONLY'])
+ 				.setAllowInvalid(false)
+ 				.setHelpText('Choose FULL to attach all rows (default) or FLAGGED_ONLY to attach only flagged rows.')
+ 				.build();
+ 			attachRange.setDataValidation(attachRule);
+ 		} catch (e) { Logger.log('Attachment Mode validation apply error (existing): ' + e.message); }
+ 		// Attempt to auto-resize A..G
+ 		try { sheet.autoResizeColumns(1, 7); } catch (e) {}
+ 	}
+ } catch (e) { Logger.log('Recipients sheet upgrade check failed: ' + e.message); }
+ 
+ // Ensure instructions are present and refreshed (including Attachment Mode description)
+ try { _ensureInstructionsOnSheet_(sheet, _buildRecipientsInstructions_()); } catch (e) { Logger.log('Ensure recipients instructions failed: ' + e.message); }
  }
  
  return sheet;
@@ -5472,11 +5613,15 @@ function loadRecipientsFromSheet(forceSheetRead) {
 			const primaryRecipients = String(row[1] || '').trim();
 			const ccRecipients = String(row[2] || '').trim();
 			const withholdNoFlagEmails = String(row[4] || '').trim().toUpperCase();
+			// Optional per-config attachment mode in column G (index 6): FULL | FLAGGED_ONLY
+			const attachmentModeRaw = String(row[6] || '').trim().toUpperCase();
+			const attachmentMode = attachmentModeRaw === 'FLAGGED_ONLY' ? 'FLAGGED_ONLY' : 'FULL';
 
 			recipients[configName] = {
 				primary: primaryRecipients,
 				cc: ccRecipients,
-				withholdNoFlagEmails: withholdNoFlagEmails === 'TRUE'
+				withholdNoFlagEmails: withholdNoFlagEmails === 'TRUE',
+				attachmentMode
 			};
 		}
 
@@ -5489,34 +5634,8 @@ function loadRecipientsFromSheet(forceSheetRead) {
 	}
 }
 
-// Hardcoded primary recipient overrides by Config Name.
-// If a config appears here, its "To" line will use this value regardless of sheet contents (in production mode).
-// Values should be comma-separated lists when multiple recipients are desired.
-const PRIMARY_RECIPIENT_OVERRIDES = {
-	PST01: 'evschneider@horizonmedia.com, BKaufman@horizonmedia.com',
-	PST02: 'fvariath@horizonmedia.com, BKaufman@horizonmedia.com',
-	PST03: 'dmaestre@horizonmedia.com, BKaufman@horizonmedia.com',
-	NEXTBO01: 'Seaworld_AdOps@horizon-next.com, BKaufman@horizonmedia.com',
-	NEXTRS01: 'UHG_AdOps@horizonmedia.com, BKaufman@horizonmedia.com',
-	NEXTSZ01: 'Goddard_AdOps@horizonmedia.com, BKaufman@horizonmedia.com',
-	SPTM01: 'spectrum_adops@horizonmedia.com, BKaufman@horizonmedia.com',
-	NFL01: 'NFL_AdOps@horizonmedia.com, sbermolone@horizonmedia.com, BKaufman@horizonmedia.com',
-	ENT01: 'entertainmentadops@horizonmedia.com, jgonzalez@horizonmedia.com, BKaufman@horizonmedia.com',
-	MSG01: 'MSG_Adops@horizonmedia.com, BKaufman@horizonmedia.com',
-	AMC01: 'AMC_AdOps@horizonmedia.com, BKaufman@horizonmedia.com',
-	OMGA01: 'Omega_AdOps@horizonmedia.com, BKaufman@horizonmedia.com',
-	NDC01: 'NDC_AdOps@horizonmedia.com, BKaufman@horizonmedia.com',
-	GMNR01: 'RegeneronAdOps@horizonmedia.com, BKaufman@horizonmedia.com',
-	CAP01: 'capitaloneadops@horizonmedia.com, BKaufman@horizonmedia.com',
-	BTB01: 'primobrands_campaignmanagement@horizonmedia.com, BKaufman@horizonmedia.com',
-	DHC01: 'DHC_CampaignMgmt@horizonmedia.com, BKaufman@horizonmedia.com',
-	STAR01: 'starz_campaignmgmt@horizonmedia.com, BKaufman@horizonmedia.com',
-	CADH01: 'Hondas_CampaignMgmt@horizonmedia.com, CSH_campaignmgmt@horizonmedia.com, BKaufman@horizonmedia.com',
-	LION01: 'LG_CampaignManagement@horizonmedia.com, BKaufman@horizonmedia.com',
-	NEXTSD01: 'BKaufman@horizonmedia.com',
-	NEXTCD01: 'adtalemAdOps@horizonmedia.com, BKaufman@horizonmedia.com',
-	WRI01: 'ImpossibleAdOps@horizonmedia.com, RevlonAdOps@horizonmedia.com, BKaufman@horizonmedia.com'
-};
+// Recipients are now managed exclusively via the Audit Recipients sheet.
+// No hardcoded overrides - the sheet is the single source of truth.
 
 // Resolve primary recipients for a given config name from recipients sheet data.
 // In STAGING mode, always return ADMIN_EMAIL to prevent accidental sends.
@@ -5525,12 +5644,7 @@ function resolveRecipients(configName, recipientsData) {
 	if (getStagingMode_() === 'Y') {
 		return ADMIN_EMAIL;
 	}
-	// Check hardcoded overrides first
-	if (name && PRIMARY_RECIPIENT_OVERRIDES.hasOwnProperty(name)) {
-		const override = String(PRIMARY_RECIPIENT_OVERRIDES[name] || '').trim();
-		if (override) return override;
-	}
-	// Fall back to sheet-provided recipients
+	// Use Recipients sheet as the single source of truth
 	const data = recipientsData || {};
 	const entry = name && data[name] ? data[name] : null;
 	const primary = entry && entry.primary ? String(entry.primary).trim() : '';
@@ -6151,7 +6265,8 @@ function makeAuditConfig_(name, label) {
 	};
 }
 
-let auditConfigsCache_ = null;
+
+// ...existing code...
 
 function clearAuditConfigsCache_() {
 	auditConfigsCache_ = null;
@@ -8815,6 +8930,7 @@ function _buildRecipientsInstructions_() {
  ['CC Recipients:', 'CC email addresses (comma-separated if multiple)'],
  ['Active:', 'TRUE to use these recipients, FALSE to disable'],
  ['Withhold No-Flag Emails:', 'TRUE to skip emails when 0 flags found, FALSE to always send emails'],
+ ['Attachment Mode:', 'FULL = attach full merged workbook (default). FLAGGED_ONLY = attach only the flagged rows as Excel.'],
  ['Last Updated:', 'Automatically updated when you modify recipients'],
  ['', ''],
  ['Staging Mode Override:', `Currently: ${getStagingMode_() === 'Y' ? 'STAGING (all emails go to admin)' : 'PRODUCTION (uses sheet recipients)'}`],
@@ -8865,29 +8981,29 @@ const externalSpreadsheet = openSpreadsheetById_(EXTERNAL_CONFIG_SHEET_ID);
  Logger.log(`" Found Recipients sheet: ${RECIPIENTS_SHEET_NAME}`);
  
  const defaultRecipients = [
- ['PST01', 'evschneider@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['PST02', 'fvariath@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['PST03', 'dmaestre@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NEXTBO01', 'Seaworld_AdOps@horizon-next.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NEXTRS01', 'UHG_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NEXTSZ01', 'Goddard_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['SPTM01', 'spectrum_adops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NFL01', 'NFL_AdOps@horizonmedia.com, sbermolone@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['ENT01', 'entertainmentadops@horizonmedia.com, jgonzalez@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['MSG01', 'MSG_Adops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['AMC01', 'AMC_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['OMGA01', 'Omega_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NDC01', 'NDC_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['GMNR01', 'RegeneronAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['CAP01', 'capitaloneadops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['BTB01', 'primobrands_campaignmanagement@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['DHC01', 'DHC_CampaignMgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['STAR01', 'starz_campaignmgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['CADH01', 'Hondas_CampaignMgmt@horizonmedia.com, CSH_campaignmgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['LION01', 'LG_CampaignManagement@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NEXTSD01', 'BKaufman@horizonmedia.com, sleepnumber_adops@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['NEXTCD01', 'adtalemAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')],
- ['WRI01', 'ImpossibleAdOps@horizonmedia.com, RevlonAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd')]
+ ['PST01', 'BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['PST02', 'fvariath@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['PST03', 'dmaestre@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['NEXTBO01', 'Seaworld_AdOps@horizon-next.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['NEXTRS01', 'UHG_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['NEXTSZ01', 'Goddard_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['SPTM01', 'spectrum_adops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['NFL01', 'NFL_AdOps@horizonmedia.com, sbermolone@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['ENT01', 'entertainmentadops@horizonmedia.com, jgonzalez@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['MSG01', 'MSG_Adops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['AMC01', 'AMC_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['OMGA01', 'Omega_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['NDC01', 'NDC_AdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['GMNR01', 'RegeneronAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['CAP01', 'capitaloneadops@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['BTB01', 'primobrands_campaignmanagement@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['DHC01', 'DHC_CampaignMgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['STAR01', 'starz_campaignmgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['CADH01', 'Hondas_CampaignMgmt@horizonmedia.com, CSH_campaignmgmt@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['LION01', 'LG_CampaignManagement@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['NEXTSD01', 'BKaufman@horizonmedia.com, sleepnumber_adops@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['NEXTCD01', 'adtalemAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL'],
+ ['WRI01', 'ImpossibleAdOps@horizonmedia.com, RevlonAdOps@horizonmedia.com, BKaufman@horizonmedia.com', '', 'TRUE', 'FALSE', formatDate(new Date(), 'yyyy-MM-dd'), 'FULL']
  ];
  
  // Clear existing data and add defaults
@@ -8898,16 +9014,28 @@ const externalSpreadsheet = openSpreadsheetById_(EXTERNAL_CONFIG_SHEET_ID);
  'CC Recipients',
  'Active',
  'Withhold No-Flag Emails',
- 'Last Updated'
+ 'Last Updated',
+ 'Attachment Mode'
  ];
  recipientsSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
- recipientsSheet.getRange(2, 1, defaultRecipients.length, 6).setValues(defaultRecipients);
+ recipientsSheet.getRange(2, 1, defaultRecipients.length, 7).setValues(defaultRecipients);
  
  // Format headers
  const headerRange = recipientsSheet.getRange(1, 1, 1, headers.length);
  headerRange.setFontWeight('bold');
  headerRange.setBackground('#4285f4');
  headerRange.setFontColor('#ffffff');
+
+ // Add dropdown validation for Attachment Mode column (G) - starting from row 2
+ try {
+	 const attachRange = recipientsSheet.getRange('G2:G');
+	 const attachRule = SpreadsheetApp.newDataValidation()
+		 .requireValueInList(['FULL', 'FLAGGED_ONLY'])
+		 .setAllowInvalid(false)
+		 .setHelpText('Choose FULL to attach all rows (default) or FLAGGED_ONLY to attach only flagged rows.')
+		 .build();
+	 attachRange.setDataValidation(attachRule);
+ } catch (e) { Logger.log('Attachment Mode validation error (populateExternal): ' + e.message); }
  
  Logger.log(`... Populated Recipients with ${defaultRecipients.length} configs`);
  } else {
