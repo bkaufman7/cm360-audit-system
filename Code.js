@@ -936,7 +936,7 @@ function getExpectedHeaderSpec_() {
 	return [
 		['Advertiser'],
 		['Campaign'],
-		['Site (CM360)', 'Site'],
+		['Site (CM360)', 'Site', 'Site ID (CM360)'],
 		['Placement ID'],
 		['Placement', 'Placement Name'],
 		['Placement Start Date', 'Start Date'],
