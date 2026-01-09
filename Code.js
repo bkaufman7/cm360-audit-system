@@ -1619,9 +1619,18 @@ function fetchDailyAuditAttachments(config, recipientsData) {
  return null;
  }
 
- const threads = label.getThreads();
- const startOfToday = new Date();
- startOfToday.setHours(0, 0, 0, 0); 
+ // Use Gmail search query with date filter instead of getThreads()
+ const tz = Session.getScriptTimeZone();
+ const yesterday = new Date();
+ yesterday.setDate(yesterday.getDate() - 1);
+ const yesterdayStr = Utilities.formatDate(yesterday, tz, 'yyyy/MM/dd');
+ 
+ // Search for emails from yesterday or later (catches emails that arrive just after midnight)
+ const searchQuery = `label:"${config.label}" after:${yesterdayStr}`;
+ Logger.log(`[IN] [${config.name}] Gmail search query: ${searchQuery}`);
+ 
+ const threads = GmailApp.search(searchQuery);
+ Logger.log(`[IN] [${config.name}] Found ${threads.length} thread(s) matching search`);
  
  const parentFolder = getDriveFolderByPath_(config.tempDailyFolderPath);
 	if (!parentFolder) {
@@ -1642,9 +1651,10 @@ function fetchDailyAuditAttachments(config, recipientsData) {
  const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss');
  const driveFolder = parentFolder.createFolder(`Temp_CM360_${timestamp}`);
 
+ // Process all messages from threads (Gmail search already filtered by date)
  threads.forEach(thread => {
  thread.getMessages().forEach(message => {
- if (message.getDate() < startOfToday) return;
+ // No date filtering here - Gmail search already did it
 
  message.getAttachments({ includeInlineImages: false }).forEach(file => {
  const name = file.getName();
@@ -1653,6 +1663,7 @@ function fetchDailyAuditAttachments(config, recipientsData) {
  // Unzip file and save all .xlsx/.csv blobs
  if (name.endsWith('.xlsx') && type === MimeType.MICROSOFT_EXCEL) {
  driveFolder.createFile(file);
+ Logger.log(`[IN] [${config.name}] Saved Excel file: ${name}`);
  } else if (name.endsWith('.zip') && type === MimeType.ZIP) {
  const blobs = Utilities.unzip(file);
  let count = 0;
