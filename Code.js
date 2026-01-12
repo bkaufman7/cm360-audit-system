@@ -86,6 +86,14 @@ const DEDICATED_BATCH_CONFIGS = (function () {
 const RECIPIENTS_SHEET_NAME = 'Audit Recipients';
 const THRESHOLDS_SHEET_NAME = 'Audit Thresholds';
 const EXCLUSIONS_SHEET_NAME = 'Audit Exclusions';
+const PERFORMANCE_DROP_THRESHOLDS_SHEET_NAME = 'Performance Drop Thresholds';
+
+// Performance drop cache constants
+const PERFORMANCE_CACHE_PATH = [...TRASH_ROOT_PATH, 'Performance Drop Cache'];
+const PERFORMANCE_CACHE_DAYS = 7; // Keep last 7 days of history
+const PERFORMANCE_BACKFILL_STATE_KEY = 'CM360_PERF_BACKFILL_STATE_V1';
+const PERFORMANCE_BACKFILL_TRIGGER_ID_KEY = 'CM360_PERF_BACKFILL_TRIGGER_ID';
+const PERFORMANCE_BACKFILL_DAYS = 4; // Backfill last 4 days on first enable
 
 // Robust opener for spreadsheets by ID with Drive fallback and clear errors
 function openSpreadsheetById_(id) {
@@ -2333,10 +2341,12 @@ function executeAudit(config, preloaded) {
  const exclusionsData = (preloaded && preloaded.exclusionsData) || loadExclusionsFromSheet();
  const thresholdsData = (preloaded && preloaded.thresholdsData) || loadThresholdsFromSheet();
  const recipientsData = (preloaded && preloaded.recipientsData) || loadRecipientsFromSheet();
+ const performanceDropThresholds = (preloaded && preloaded.performanceDropThresholds) || loadPerformanceDropThresholdsFromSheet();
  if (!usingPreloaded) {
 	 Logger.log(`ℹ️ [${configName}] Loaded exclusions for ${Object.keys(exclusionsData).length} configs`);
 	 Logger.log(`ℹ️ [${configName}] Loaded thresholds for ${Object.keys(thresholdsData).length} configs`);
 	 Logger.log(`ℹ️ [${configName}] Loaded recipients for ${Object.keys(recipientsData).length} configs`);
+	 Logger.log(`ℹ️ [${configName}] Loaded performance drop thresholds for ${Object.keys(performanceDropThresholds).length} configs`);
  }
 
  const folderId = fetchDailyAuditAttachments(config, recipientsData);
@@ -2361,6 +2371,58 @@ function executeAudit(config, preloaded) {
 	 bccAdmin: true 
  }, configName);
  return { status: 'Skipped: No files found', flaggedCount: null, emailSent: true, emailTime: formattedNow };
+ }
+
+ // PERFORMANCE DROP DETECTION: Check yesterday's data before creating today's merge
+ let performanceDrops = [];
+ const perfThreshold = performanceDropThresholds[configName];
+ if (perfThreshold && perfThreshold.enabled) {
+	 try {
+		 Logger.log(`[${configName}] Running performance drop detection`);
+		 // Read yesterday's cache data (which was saved yesterday)
+		 const yesterday = new Date(now);
+		 yesterday.setDate(yesterday.getDate() - 1);
+		 const yesterdayStr = formatDate(yesterday, 'yyyy-MM-dd');
+		 
+		 // Try to read yesterday's cache
+		 const cacheFolderPath = [...PERFORMANCE_CACHE_PATH, configName];
+		 const cacheFolder = getDriveFolderByPathReadOnly_(cacheFolderPath);
+		 
+		 if (cacheFolder) {
+			 const yesterdayFileName = `cache_${yesterdayStr}.json`;
+			 const files = cacheFolder.getFilesByName(yesterdayFileName);
+			 
+			 if (files.hasNext()) {
+				 const file = files.next();
+				 try {
+					 const content = file.getBlob().getDataAsString();
+					 const yesterdayCache = JSON.parse(content);
+					 
+					 if (yesterdayCache && yesterdayCache.data) {
+						 // Detect performance drops in yesterday's data
+						 performanceDrops = detectPerformanceDrops_(
+							 configName,
+							 yesterdayCache.data,
+							 perfThreshold,
+							 exclusionsData
+						 );
+						 
+						 if (performanceDrops.length > 0) {
+							 Logger.log(`[${configName}] 🚩 Detected ${performanceDrops.length} performance drops`);
+						 }
+					 }
+				 } catch (parseError) {
+					 Logger.log(`[${configName}] Error parsing yesterday's cache: ${parseError.message}`);
+				 }
+			 } else {
+				 Logger.log(`[${configName}] No cache found for yesterday (${yesterdayStr}); skipping performance drop detection`);
+			 }
+		 } else {
+			 Logger.log(`[${configName}] Performance cache folder not found; consider running backfill`);
+		 }
+	 } catch (perfError) {
+		 Logger.log(`[${configName}] Error during performance drop detection: ${perfError.message}`);
+	 }
  }
 
  const mergedSheetId = mergeDailyAuditExcels(folderId, config.mergedFolderPath, configName, recipientsData);
@@ -2652,6 +2714,65 @@ function executeAudit(config, preloaded) {
 
  SpreadsheetApp.flush();
 
+ // SAVE PERFORMANCE CACHE: Extract and save today's data for tomorrow's performance drop detection
+ if (perfThreshold && perfThreshold.enabled) {
+	 try {
+		 Logger.log(`[${configName}] Saving performance cache for today`);
+		 const todayStr = formatDate(now, 'yyyy-MM-dd');
+		 const placementData = extractPlacementDataForCache_(sheet, headers);
+		 
+		 if (placementData.length > 0) {
+			 savePerformanceCache_(configName, placementData, todayStr);
+			 
+			 // Check if this is first time enabling - trigger backfill if cache folder was just created
+			 const cacheFolderPath = [...PERFORMANCE_CACHE_PATH, configName];
+			 const cacheFolder = getDriveFolderByPathReadOnly_(cacheFolderPath);
+			 if (cacheFolder) {
+				 const files = cacheFolder.getFiles();
+				 let fileCount = 0;
+				 while (files.hasNext()) {
+					 files.next();
+					 fileCount++;
+					 if (fileCount > 1) break; // If more than 1 file, not first time
+				 }
+				 
+				 if (fileCount === 1) {
+					 // This is the first cache file - trigger backfill
+					 Logger.log(`[${configName}] First performance cache detected; triggering backfill`);
+					 try {
+						 performanceBackfillHistory();
+					 } catch (backfillError) {
+						 Logger.log(`[${configName}] Backfill error: ${backfillError.message}`);
+					 }
+				 }
+			 }
+		 }
+	 } catch (cacheError) {
+		 Logger.log(`[${configName}] Error saving performance cache: ${cacheError.message}`);
+	 }
+ }
+ 
+ // LAUNCH DETECTION: Flag recently launched placements
+ let launchDetections = [];
+ if (perfThreshold && perfThreshold.launchDetectionEnabled) {
+	 try {
+		 Logger.log(`[${configName}] Running launch detection`);
+		 const placementData = extractPlacementDataForCache_(sheet, headers);
+		 launchDetections = detectLaunchesFromMergedData_(
+			 configName,
+			 placementData,
+			 perfThreshold,
+			 exclusionsData
+		 );
+		 
+		 if (launchDetections.length > 0) {
+			 Logger.log(`[${configName}] 🚀 Detected ${launchDetections.length} new launches`);
+		 }
+	 } catch (launchError) {
+		 Logger.log(`[${configName}] Error during launch detection: ${launchError.message}`);
+	 }
+ }
+
  const displayRows = flaggedRows.map(row => [
  row[fullCol.Advertiser],
  row[fullCol.Campaign],
@@ -2669,12 +2790,12 @@ function executeAudit(config, preloaded) {
  if (displayRows.length > 0) {
 	 // If suppressed, don't actually send but report as would-send
 	 const suppressed = (typeof isEmailSuppressed_ === 'function' && isEmailSuppressed_());
-	 const emailSent = suppressed ? false : emailFlaggedRows(mergedSheetId, displayRows, flaggedRows, config, recipientsData);
+	 const emailSent = suppressed ? false : emailFlaggedRows(mergedSheetId, displayRows, flaggedRows, config, recipientsData, performanceDrops, launchDetections);
  const status = emailSent ? 'Completed with flags' : 'Completed with flags (email failed to send)';
 	 return { status, flaggedCount: flaggedRows.length, emailSent, emailTime: formattedNow, latestReportUrl: mergedSheetUrl };
  } else {
 	 // Should not reach: displayRows corresponds to flagged case; keep existing fallback just in case
-	 const emailSent = emailFlaggedRows(mergedSheetId, displayRows, flaggedRows, config, recipientsData);
+	 const emailSent = emailFlaggedRows(mergedSheetId, displayRows, flaggedRows, config, recipientsData, performanceDrops, launchDetections);
 	 const status = emailSent ? 'Completed with flags' : 'Completed with flags (email failed to send)';
 	 return { status, flaggedCount: flaggedRows.length, emailSent, emailTime: formattedNow, latestReportUrl: mergedSheetUrl };
  
@@ -2730,9 +2851,10 @@ function runAuditBatch(configs, isFinal = false) {
 	 preloaded = {
 		 recipientsData: loadRecipientsFromSheet(),
 		 thresholdsData: loadThresholdsFromSheet(),
-		 exclusionsData: loadExclusionsFromSheet()
+		 exclusionsData: loadExclusionsFromSheet(),
+		 performanceDropThresholds: loadPerformanceDropThresholdsFromSheet()
 	 };
-	 Logger.log(`ℹ️ Preloaded config tables: recipients=${Object.keys(preloaded.recipientsData||{}).length}, thresholds=${Object.keys(preloaded.thresholdsData||{}).length}, exclusions=${Object.keys(preloaded.exclusionsData||{}).length}`);
+	 Logger.log(`ℹ️ Preloaded config tables: recipients=${Object.keys(preloaded.recipientsData||{}).length}, thresholds=${Object.keys(preloaded.thresholdsData||{}).length}, exclusions=${Object.keys(preloaded.exclusionsData||{}).length}, performanceDrop=${Object.keys(preloaded.performanceDropThresholds||{}).length}`);
  } catch (preErr) {
 	 Logger.log('Preload failed (will fall back to per-config loads): ' + preErr.message);
 	 preloaded = null;
@@ -3050,7 +3172,7 @@ function getEmailQuotaRemaining_() {
 }
 
 // === EMAIL FLAGGED ROWS & REPORTS ===
-function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsData) {
+function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsData, performanceDrops, launchDetections) {
  const configName = config.name;
 
  if (!flaggedRows || flaggedRows.length === 0) {
@@ -3126,6 +3248,115 @@ ${String(row[10] ?? '').split('; ').map(f => `<div>${escapeHtml(f)}</div>`).join
 			? `<p style="font-family:Arial, sans-serif; font-size:12px; margin-top:12px;">Please view the attachment for additional flags.</p>`
 			: '';
 
+		// Build performance drop section if there are any drops
+		let performanceDropSection = '';
+		if (performanceDrops && performanceDrops.length > 0) {
+			const dropRows = performanceDrops.map((drop, i) => {
+				// Build metric display
+				let metricDisplay = '';
+				if (drop.impressionDrop !== null && drop.clickDrop !== null) {
+					// Both metrics dropped
+					metricDisplay = `Impr: ${drop.avgImpressions} → ${drop.currentImpressions} (-${Math.round(drop.impressionDrop)}%)<br>Clicks: ${drop.avgClicks} → ${drop.currentClicks} (-${Math.round(drop.clickDrop)}%)`;
+				} else if (drop.impressionDrop !== null) {
+					// Only impressions dropped
+					metricDisplay = `Impr: ${drop.avgImpressions} → ${drop.currentImpressions} (-${Math.round(drop.impressionDrop)}%)`;
+				} else if (drop.clickDrop !== null) {
+					// Only clicks dropped
+					metricDisplay = `Clicks: ${drop.avgClicks} → ${drop.currentClicks} (-${Math.round(drop.clickDrop)}%)`;
+				}
+				
+				return `
+	<tr style="line-height:1.2; font-size:11px; background-color:${i % 2 === 0 ? '#fff8dc' : '#fffacd'};">
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(drop.advertiser)}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(drop.campaign)}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(drop.siteName)}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncate(drop.placementName, 60))}</td>
+	<td style="padding:2px 4px;">${escapeHtml(drop.placementId)}</td>
+	<td style="padding:2px 4px;">${drop.startDate ? formatDate(new Date(drop.startDate), 'yyyy-MM-dd') : ''}</td>
+	<td style="padding:2px 4px;">${drop.endDate ? formatDate(new Date(drop.endDate), 'yyyy-MM-dd') : ''}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncate(drop.creative, 45))}</td>
+	<td style="padding:2px 4px; text-align:right;">${drop.currentImpressions}</td>
+	<td style="padding:2px 4px; text-align:right;">${drop.currentClicks}</td>
+	<td style="padding:2px 4px; font-size:10px; line-height:1.3;">${metricDisplay}</td>
+	</tr>`;
+			}).join('');
+			
+			performanceDropSection = `
+	<h3 style="font-family:Arial, sans-serif; font-size:14px; margin-top:20px; margin-bottom:8px; color:#d9534f;">⚠️ Performance Drops Detected (${performanceDrops.length})</h3>
+	<p style="font-family:Arial, sans-serif; font-size:12px; margin-bottom:8px;">The following placements show significant performance drops compared to their 3-day average. This may indicate delivery issues:</p>
+	<table border="1" cellpadding="2" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse; margin-bottom:12px;">
+	<thead style="background-color:#f8d7da;">
+	<tr>
+	<th style="padding:2px; width:140px;">Advertiser</th>
+	<th style="padding:2px; width:180px;">Campaign</th>
+	<th style="padding:2px; width:100px;">Site</th>
+	<th style="padding:2px; width:180px;">Placement</th>
+	<th style="padding:2px; width:100px;">Placement ID</th>
+	<th style="padding:2px; width:90px;">Start Date</th>
+	<th style="padding:2px; width:90px;">End Date</th>
+	<th style="padding:2px; width:180px;">Creative</th>
+	<th style="padding:2px; width:60px;">Impr.</th>
+	<th style="padding:2px; width:60px;">Clicks</th>
+	<th style="padding:2px; width:160px;">3-Day Avg vs Yesterday</th>
+	</tr>
+	</thead>
+	<tbody>
+${dropRows}
+	</tbody>
+	</table>
+	`;
+		}
+		
+		// Build launch detection section if there are any launches
+		let launchSection = '';
+		if (launchDetections && launchDetections.length > 0) {
+			const launchRows = launchDetections.map((launch, i) => {
+				const daysText = launch.daysFromStart === 0 ? 'Today' : 
+								 launch.daysFromStart === 1 ? 'Yesterday' : 
+								 `${launch.daysFromStart} days ago`;
+				
+				return `
+	<tr style="line-height:1.2; font-size:11px; background-color:${i % 2 === 0 ? '#e6f4ea' : '#d4edda'};">
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(launch.advertiser)}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(launch.campaign)}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(launch.siteName)}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncate(launch.placementName, 60))}</td>
+	<td style="padding:2px 4px;">${escapeHtml(launch.placementId)}</td>
+	<td style="padding:2px 4px;">${launch.startDate ? formatDate(new Date(launch.startDate), 'yyyy-MM-dd') : ''}</td>
+	<td style="padding:2px 4px;">${launch.endDate ? formatDate(new Date(launch.endDate), 'yyyy-MM-dd') : ''}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncate(launch.creative, 45))}</td>
+	<td style="padding:2px 4px; text-align:right;">${launch.impressions}</td>
+	<td style="padding:2px 4px; text-align:right;">${launch.clicks}</td>
+	<td style="padding:2px 4px; text-align:center;">${daysText}</td>
+	</tr>`;
+			}).join('');
+			
+			launchSection = `
+	<h3 style="font-family:Arial, sans-serif; font-size:14px; margin-top:20px; margin-bottom:8px; color:#0f9d58;">🚀 New Launches Detected (${launchDetections.length})</h3>
+	<p style="font-family:Arial, sans-serif; font-size:12px; margin-bottom:8px;">The following placements recently went live. Monitor their initial performance:</p>
+	<table border="1" cellpadding="2" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse; margin-bottom:12px;">
+	<thead style="background-color:#c8e6c9;">
+	<tr>
+	<th style="padding:2px; width:140px;">Advertiser</th>
+	<th style="padding:2px; width:180px;">Campaign</th>
+	<th style="padding:2px; width:100px;">Site</th>
+	<th style="padding:2px; width:180px;">Placement</th>
+	<th style="padding:2px; width:100px;">Placement ID</th>
+	<th style="padding:2px; width:90px;">Start Date</th>
+	<th style="padding:2px; width:90px;">End Date</th>
+	<th style="padding:2px; width:180px;">Creative</th>
+	<th style="padding:2px; width:60px;">Impr.</th>
+	<th style="padding:2px; width:60px;">Clicks</th>
+	<th style="padding:2px; width:100px;">Launched</th>
+	</tr>
+	</thead>
+	<tbody>
+${launchRows}
+	</tbody>
+	</table>
+	`;
+		}
+
 		return `
 	<p style="font-family:Arial, sans-serif; font-size:13px; line-height:1.4;">${summaryText}</p>
 	<table border="1" cellpadding="2" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse;">
@@ -3149,6 +3380,8 @@ ${visibleRows}
 	</tbody>
 	</table>
 ${truncateNotice}
+${performanceDropSection}
+${launchSection}
 	<p style="margin-top:12px; font-family:Arial, sans-serif; font-size:12px;">&mdash; Platform Solutions Team</p>
 	`;
 	};
@@ -3195,7 +3428,7 @@ ${truncateNotice}
 		Logger.log(`[${configName}] Failed to send flagged rows email; an alert was sent to the admin.`);
 	}
 
- Logger.log(`[${configName}](c) Flagging complete: ${flaggedRows.length} row(s)`);
+ Logger.log(`[${configName}](c) Flagging complete: ${flaggedRows.length} row(s), ${performanceDrops ? performanceDrops.length : 0} performance drop(s), ${launchDetections ? launchDetections.length : 0} launch(es)`);
 
  return emailSuccess;
 }
@@ -3856,7 +4089,8 @@ function createAuditMenu(ui) {
  .addItem('📄  Thresholds (create/open)', 'getOrCreateThresholdsSheet')
  .addItem('🚫  Exclusions (create/open)', 'getOrCreateExclusionsSheet')
  .addItem('📧  Recipients (create/open)', 'getOrCreateRecipientsSheet')
- .addItem('🔃  Refresh Recipients (Attachment Mode)', 'refreshRecipientsAttachmentMode')
+ .addItem('�  Performance Drop Thresholds (create/open)', 'getOrCreatePerformanceDropThresholdsSheet')
+ .addItem('�🔃  Refresh Recipients (Attachment Mode)', 'refreshRecipientsAttachmentMode')
  .addItem('🧩  CM360 Config Builder…', 'showConfigCreationHelper')
  .addSeparator()
 // External config (lean)
@@ -3902,7 +4136,8 @@ function getAdminControlsHelpItems() {
 		{ label: '📄  Thresholds (create/open)', fn: 'getOrCreateThresholdsSheet', desc: 'Opens or creates the Audit Thresholds sheet and applies formatting/validations.' },
 		{ label: '🚫  Exclusions (create/open)', fn: 'getOrCreateExclusionsSheet', desc: 'Opens or creates the Audit Exclusions sheet with protected Placement Name column and validations.' },
 		{ label: '📧  Recipients (create/open)', fn: 'getOrCreateRecipientsSheet', desc: 'Opens or creates the Audit Recipients sheet to manage To/CC and withhold settings.' },
-		{ label: '🔃  Refresh Recipients (Attachment Mode)', fn: 'refreshRecipientsAttachmentMode', desc: 'Adds/refreshes the Attachment Mode column (FULL | FLAGGED_ONLY) and instructions on Admin and External sheets.' },
+		{ label: '�  Performance Drop Thresholds (create/open)', fn: 'getOrCreatePerformanceDropThresholdsSheet', desc: 'Opens or creates the Performance Drop Thresholds sheet to configure performance drop detection per config.' },
+		{ label: '�🔃  Refresh Recipients (Attachment Mode)', fn: 'refreshRecipientsAttachmentMode', desc: 'Adds/refreshes the Attachment Mode column (FULL | FLAGGED_ONLY) and instructions on Admin and External sheets.' },
 		{ label: '🧩  CM360 Config Builder…', fn: 'showConfigCreationHelper', desc: 'Guided UI to add a new CM360 audit config; provides next steps and admin hints.' },
 		{ label: '📤  Sync TO External Config', fn: 'syncToExternalConfig', desc: 'Copies Admin sheet tabs (Thresholds/Recipients/Exclusions/Requests) to the external spreadsheet.' },
 		{ label: '📥  Sync FROM External Config', fn: 'syncFromExternalConfig', desc: 'Pulls latest config from the external spreadsheet into Admin tabs.' },
@@ -4701,7 +4936,7 @@ function refreshRecipientsAttachmentMode() {
 /** Ensure all menu functions exist; create safe stubs for missing ones. */
 function ensureMenuFunctionsPresent() {
 	const fnNames = [
-		'prepareAuditEnvironment','getOrCreateThresholdsSheet','getOrCreateExclusionsSheet','getOrCreateRecipientsSheet','addMissingConfigNames',
+		'prepareAuditEnvironment','getOrCreateThresholdsSheet','getOrCreateExclusionsSheet','getOrCreateRecipientsSheet','getOrCreatePerformanceDropThresholdsSheet','addMissingConfigNames',
 		'promptSetupExternalConfigMenu','ensureExternalConfigInstructions','updateExternalConfigInstructions','syncToExternalConfig',
 		'syncFromExternalConfig','populateExternalConfigWithDefaults','showCreateAuditRequestPicker',
 		'processAuditRequests','fixAuditRequestsSheet','refreshExternalHeaderStyles',
@@ -6264,6 +6499,902 @@ function LOOKUP_PLACEMENT_NAME(configName, placementId) {
  Logger.log(`Error looking up placement name: ${error.message}`);
  return null;
  }
+}
+
+// === PERFORMANCE DROP DETECTION ===
+// Create or get the Performance Drop Thresholds sheet
+function getOrCreatePerformanceDropThresholdsSheet() {
+	try {
+		const spreadsheet = getConfigSpreadsheet();
+		let sheet = spreadsheet.getSheetByName(PERFORMANCE_DROP_THRESHOLDS_SHEET_NAME);
+		
+		if (!sheet) {
+			Logger.log(`Creating new performance drop thresholds sheet: ${PERFORMANCE_DROP_THRESHOLDS_SHEET_NAME}`);
+			sheet = spreadsheet.insertSheet(PERFORMANCE_DROP_THRESHOLDS_SHEET_NAME);
+			
+			// Set up the header row
+			const headers = [
+				'Config Name',
+				'Enable Performance Drop',
+				'Drop Percentage Threshold',
+				'Min Volume Threshold',
+				'Grace Period Days',
+				'Enable Launch Detection',
+				'Launch Window Days',
+				'Launch Min Volume',
+				'Active',
+				'Last Updated',
+				'INSTRUCTIONS'
+			];
+			
+			sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+			
+			// Format the main headers
+			const mainHeaderRange = sheet.getRange(1, 1, 1, 10);
+			mainHeaderRange.setFontWeight('bold');
+			mainHeaderRange.setBackground('#4285f4');
+			mainHeaderRange.setFontColor('#ffffff');
+			
+			// Format the instructions header
+			const instructionsHeaderRange = sheet.getRange(1, 11, 1, 1);
+			instructionsHeaderRange.setFontWeight('bold');
+			instructionsHeaderRange.setBackground('#ff9900');
+			instructionsHeaderRange.setFontColor('#ffffff');
+			
+			// Add dropdown validation for Enable Performance Drop column (column B)
+			const enablePerfDropRange = sheet.getRange('B2:B');
+			const enablePerfDropRule = SpreadsheetApp.newDataValidation()
+				.requireValueInList(['TRUE', 'FALSE'])
+				.setAllowInvalid(false)
+				.setHelpText('Set to TRUE to enable performance drop detection, FALSE to disable.')
+				.build();
+			enablePerfDropRange.setDataValidation(enablePerfDropRule);
+			
+			// Add dropdown validation for Enable Launch Detection column (column F)
+			const enableLaunchRange = sheet.getRange('F2:F');
+			const enableLaunchRule = SpreadsheetApp.newDataValidation()
+				.requireValueInList(['TRUE', 'FALSE'])
+				.setAllowInvalid(false)
+				.setHelpText('Set to TRUE to enable launch detection, FALSE to disable.')
+				.build();
+			enableLaunchRange.setDataValidation(enableLaunchRule);
+			
+			// Add dropdown validation for Active column (column I)
+			// Add dropdown validation for Active column (column I)
+			const activeRange = sheet.getRange('I2:I');
+			const activeRule = SpreadsheetApp.newDataValidation()
+				.requireValueInList(['TRUE', 'FALSE'])
+				.setAllowInvalid(false)
+				.setHelpText('Set to TRUE to use these thresholds, FALSE to disable.')
+				.build();
+			activeRange.setDataValidation(activeRule);
+			
+			// Add instruction rows
+			const instructions = [
+				['', '', '', '', '', '', '', '', '', '', 'Config Name: The audit config team name (must match Recipients sheet)'],
+				['', '', '', '', '', '', '', '', '', '', 'Enable Performance Drop: TRUE to check for drops, FALSE to skip'],
+				['', '', '', '', '', '', '', '', '', '', 'Drop Percentage Threshold: Percentage drop to flag (e.g., 50 for 50% drop)'],
+				['', '', '', '', '', '', '', '', '', '', 'Min Volume Threshold: Minimum impressions OR clicks to flag (e.g., 200)'],
+				['', '', '', '', '', '', '', '', '', '', 'Grace Period Days: 0 to check from Day 1, >0 to skip first N days'],
+				['', '', '', '', '', '', '', '', '', '', 'Enable Launch Detection: TRUE to flag new launches, FALSE to skip'],
+				['', '', '', '', '', '', '', '', '', '', 'Launch Window Days: Days since placement start to flag as launch (e.g., 3)'],
+				['', '', '', '', '', '', '', '', '', '', 'Launch Min Volume: Minimum impressions OR clicks to flag launch (e.g., 100)'],
+				['', '', '', '', '', '', '', '', '', '', 'Active: Must be TRUE for this threshold to be used'],
+				['', '', '', '', '', '', '', '', '', '', 'Last Updated: Automatically set by the system'],
+				['', '', '', '', '', '', '', '', '', '', ''],
+				['Example Config', 'TRUE', '50', '200', '0', 'TRUE', '3', '100', 'TRUE', '', 'Example: Check drops from Day 1, flag launches within 3 days']
+			];
+			sheet.getRange(2, 1, instructions.length, headers.length).setValues(instructions);
+			
+			// Format instructions column
+			const instructionsColumnRange = sheet.getRange(2, 11, instructions.length, 1);
+			instructionsColumnRange.setFontStyle('italic');
+			instructionsColumnRange.setBackground('#fff8dc');
+			
+			// Set column widths
+			sheet.setColumnWidth(1, 150); // Config Name
+			sheet.setColumnWidth(2, 180); // Enable Performance Drop
+			sheet.setColumnWidth(3, 190); // Drop Percentage Threshold
+			sheet.setColumnWidth(4, 160); // Min Volume Threshold
+			sheet.setColumnWidth(5, 150); // Grace Period Days
+			sheet.setColumnWidth(6, 180); // Enable Launch Detection
+			sheet.setColumnWidth(7, 150); // Launch Window Days
+			sheet.setColumnWidth(8, 150); // Launch Min Volume
+			sheet.setColumnWidth(9, 80); // Active
+			sheet.setColumnWidth(10, 120); // Last Updated
+			sheet.setColumnWidth(11, 450); // INSTRUCTIONS
+			
+			// Freeze header row
+			sheet.setFrozenRows(1);
+			
+			Logger.log(`✅ Performance Drop Thresholds sheet created with default structure`);
+		}
+		
+		return sheet;
+	} catch (error) {
+		Logger.log(`❌ Error creating/accessing Performance Drop Thresholds sheet: ${error.message}`);
+		throw error;
+	}
+}
+
+// Load performance drop thresholds from sheet
+function loadPerformanceDropThresholdsFromSheet() {
+	try {
+		const sheet = getOrCreatePerformanceDropThresholdsSheet();
+		const data = sheet.getDataRange().getValues();
+		const thresholds = {};
+		const skippedRows = [];
+		
+		// Skip header row (index 0)
+		for (let i = 1; i < data.length; i++) {
+			const row = data[i];
+			const configName = String(row[0] || '').trim();
+			const enableDrop = String(row[1] || '').trim().toUpperCase();
+			const dropPercentage = Number(row[2] || 50);
+			const minVolume = Number(row[3] || 200);
+			const gracePeriod = Number(row[4] || 0);
+			const enableLaunch = String(row[5] || '').trim().toUpperCase();
+			const launchWindowDays = Number(row[6] || 3);
+			const launchMinVolume = Number(row[7] || 100);
+			const active = String(row[8] || '').trim().toUpperCase();
+			
+			// Skip empty rows, instruction rows, or inactive thresholds
+			if (!configName || active !== 'TRUE') {
+				if (configName && active !== 'TRUE') {
+					skippedRows.push(`Row ${i+1}: ${configName} (Active='${active}' - not TRUE)`);
+				}
+				continue;
+			}
+			
+			if (configName.includes('INSTRUCTIONS') || 
+				configName.includes('-') ||
+				configName.includes('Config Name:') ||
+				configName.includes('Examples') ||
+				configName.includes('Example')) {
+				continue;
+			}
+			
+			// Store threshold data for this config
+			thresholds[configName] = {
+				enabled: enableDrop === 'TRUE',
+				dropPercentage: Math.max(0, Math.min(100, dropPercentage)),
+				minVolume: Math.max(0, minVolume),
+				gracePeriod: Math.max(0, Math.floor(gracePeriod)),
+				launchDetectionEnabled: enableLaunch === 'TRUE',
+				launchWindowDays: Math.max(1, Math.floor(launchWindowDays)),
+				launchMinVolume: Math.max(0, launchMinVolume)
+			};
+		}
+		
+		Logger.log(`Loaded performance drop thresholds from sheet for ${Object.keys(thresholds).length} configs`);
+		if (skippedRows.length > 0) {
+			Logger.log(`⚠️ Skipped ${skippedRows.length} inactive performance drop threshold rows:`);
+			skippedRows.forEach(msg => Logger.log(`  ${msg}`));
+		}
+		return thresholds;
+		
+	} catch (error) {
+		Logger.log(`❌ Error loading performance drop thresholds: ${error.message}`);
+		return {};
+	}
+}
+
+// Save performance cache for a config
+function savePerformanceCache_(configName, placementData, dateStr) {
+	try {
+		const cacheFolderPath = [...PERFORMANCE_CACHE_PATH, configName];
+		const cacheFolder = getDriveFolderByPath_(cacheFolderPath);
+		
+		if (!cacheFolder) {
+			Logger.log(`[${configName}] Failed to create performance cache folder`);
+			return false;
+		}
+		
+		// Create cache data structure: { date, data: [{ placementId, impressions, clicks }] }
+		const cacheData = {
+			date: dateStr,
+			timestamp: new Date().toISOString(),
+			data: placementData
+		};
+		
+		// Save as JSON file
+		const fileName = `cache_${dateStr}.json`;
+		const fileContent = JSON.stringify(cacheData, null, 2);
+		const blob = Utilities.newBlob(fileContent, 'application/json', fileName);
+		
+		// Check if file already exists and remove it
+		const existingFiles = cacheFolder.getFilesByName(fileName);
+		while (existingFiles.hasNext()) {
+			const existingFile = existingFiles.next();
+			existingFile.setTrashed(true);
+		}
+		
+		// Create new cache file
+		cacheFolder.createFile(blob);
+		
+		Logger.log(`[${configName}] Saved performance cache for ${dateStr}: ${placementData.length} placements`);
+		
+		// Cleanup old cache files (keep only last PERFORMANCE_CACHE_DAYS days)
+		cleanupOldPerformanceCache_(cacheFolder, dateStr);
+		
+		return true;
+	} catch (error) {
+		Logger.log(`[${configName}] Error saving performance cache: ${error.message}`);
+		return false;
+	}
+}
+
+// Cleanup old performance cache files
+function cleanupOldPerformanceCache_(cacheFolder, currentDateStr) {
+	try {
+		const currentDate = new Date(currentDateStr);
+		const cutoffDate = new Date(currentDate);
+		cutoffDate.setDate(cutoffDate.getDate() - PERFORMANCE_CACHE_DAYS);
+		
+		const files = cacheFolder.getFiles();
+		let deletedCount = 0;
+		
+		while (files.hasNext()) {
+			const file = files.next();
+			const fileName = file.getName();
+			
+			// Extract date from filename (format: cache_YYYY-MM-DD.json)
+			const match = fileName.match(/cache_(\d{4}-\d{2}-\d{2})\.json/);
+			if (match) {
+				const fileDate = new Date(match[1]);
+				if (fileDate < cutoffDate) {
+					file.setTrashed(true);
+					deletedCount++;
+				}
+			}
+		}
+		
+		if (deletedCount > 0) {
+			Logger.log(`Cleaned up ${deletedCount} old performance cache files`);
+		}
+	} catch (error) {
+		Logger.log(`Error cleaning up old performance cache: ${error.message}`);
+	}
+}
+
+// Read performance cache for a config
+function readPerformanceCache_(configName, daysBack) {
+	try {
+		const cacheFolderPath = [...PERFORMANCE_CACHE_PATH, configName];
+		const cacheFolder = getDriveFolderByPathReadOnly_(cacheFolderPath);
+		
+		if (!cacheFolder) {
+			Logger.log(`[${configName}] No performance cache folder found`);
+			return [];
+		}
+		
+		const cacheHistory = [];
+		const today = new Date();
+		
+		// Read cache files for the last N days
+		for (let i = 1; i <= daysBack; i++) {
+			const targetDate = new Date(today);
+			targetDate.setDate(targetDate.getDate() - i);
+			const dateStr = Utilities.formatDate(targetDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+			const fileName = `cache_${dateStr}.json`;
+			
+			const files = cacheFolder.getFilesByName(fileName);
+			if (files.hasNext()) {
+				const file = files.next();
+				try {
+					const content = file.getBlob().getDataAsString();
+					const cacheData = JSON.parse(content);
+					cacheHistory.push(cacheData);
+				} catch (parseError) {
+					Logger.log(`[${configName}] Error parsing cache file ${fileName}: ${parseError.message}`);
+				}
+			}
+		}
+		
+		Logger.log(`[${configName}] Read ${cacheHistory.length} days of performance cache history`);
+		return cacheHistory;
+		
+	} catch (error) {
+		Logger.log(`[${configName}] Error reading performance cache: ${error.message}`);
+		return [];
+	}
+}
+
+// Detect performance drops for a config
+function detectPerformanceDrops_(configName, currentData, thresholds, exclusionsData) {
+	try {
+		if (!thresholds || !thresholds.enabled) {
+			return [];
+		}
+		
+		const dropPercentage = thresholds.dropPercentage || 50;
+		const minVolume = thresholds.minVolume || 200;
+		const gracePeriod = thresholds.gracePeriod || 0;
+		
+		// Read historical cache (last 3 days for rolling average)
+		const cacheHistory = readPerformanceCache_(configName, 3);
+		
+		if (cacheHistory.length === 0) {
+			Logger.log(`[${configName}] No historical data for performance drop detection`);
+			return [];
+		}
+		
+		// Build historical data map: placementId -> array of daily data
+		const historicalMap = {};
+		cacheHistory.forEach(dayCache => {
+			if (dayCache && dayCache.data) {
+				dayCache.data.forEach(placement => {
+					const pid = String(placement.placementId || '').trim();
+					if (!pid) return;
+					
+					if (!historicalMap[pid]) {
+						historicalMap[pid] = [];
+					}
+					
+					historicalMap[pid].push({
+						date: dayCache.date,
+						impressions: Number(placement.impressions || 0),
+						clicks: Number(placement.clicks || 0)
+					});
+				});
+			}
+		});
+		
+		// Detect drops in current data
+		const drops = [];
+		
+		currentData.forEach(placement => {
+			const pid = String(placement.placementId || '').trim();
+			const placementName = String(placement.placementName || '').trim();
+			const siteName = String(placement.siteName || '').trim();
+			const startDate = placement.startDate;
+			const endDate = placement.endDate;
+			const currentImpressions = Number(placement.impressions || 0);
+			const currentClicks = Number(placement.clicks || 0);
+			
+			if (!pid) return;
+			
+			// Check if excluded
+			if (isPlacementExcludedForFlag(exclusionsData, configName, pid, 'performance_drop', placementName, siteName)) {
+				return;
+			}
+			
+			// Calculate days in flight
+			const today = new Date();
+			let daysInFlight = 0;
+			if (startDate) {
+				const start = new Date(startDate);
+				daysInFlight = Math.floor((today - start) / (1000 * 60 * 60 * 24)) + 1;
+			}
+			
+			// Apply grace period
+			if (gracePeriod > 0 && daysInFlight <= gracePeriod) {
+				return;
+			}
+			
+			// Check if placement is in-flight or just ended (last 3 days)
+			const isActive = startDate && endDate && today >= new Date(startDate) && today <= new Date(endDate);
+			const justEnded = endDate && today > new Date(endDate) && (today - new Date(endDate)) / (1000 * 60 * 60 * 24) <= 3;
+			
+			if (!isActive && !justEnded) {
+				return;
+			}
+			
+			// Get historical data for this placement
+			const history = historicalMap[pid] || [];
+			
+			if (history.length === 0) {
+				return; // No history to compare
+			}
+			
+			// Calculate rolling average using partial averages for early days
+			const daysAvailable = history.length;
+			let avgImpressions = 0;
+			let avgClicks = 0;
+			
+			history.forEach(day => {
+				avgImpressions += day.impressions;
+				avgClicks += day.clicks;
+			});
+			
+			avgImpressions = avgImpressions / daysAvailable;
+			avgClicks = avgClicks / daysAvailable;
+			
+			// Check if average volume meets minimum threshold
+			if (avgImpressions < minVolume && avgClicks < minVolume) {
+				return; // Volume too low to flag
+			}
+			
+			// Calculate drop percentages
+			const impressionDrop = avgImpressions > 0 ? ((avgImpressions - currentImpressions) / avgImpressions) * 100 : 0;
+			const clickDrop = avgClicks > 0 ? ((avgClicks - currentClicks) / avgClicks) * 100 : 0;
+			
+			// Check if either metric dropped below threshold
+			const impressionDropped = impressionDrop >= dropPercentage && avgImpressions >= minVolume;
+			const clickDropped = clickDrop >= dropPercentage && avgClicks >= minVolume;
+			
+			if (impressionDropped || clickDropped) {
+				drops.push({
+					placementId: pid,
+					placementName: placementName,
+					siteName: siteName,
+					startDate: startDate,
+					endDate: endDate,
+					advertiser: placement.advertiser || '',
+					campaign: placement.campaign || '',
+					creative: placement.creative || '',
+					currentImpressions: currentImpressions,
+					avgImpressions: Math.round(avgImpressions),
+					impressionDrop: impressionDropped ? impressionDrop : null,
+					currentClicks: currentClicks,
+					avgClicks: Math.round(avgClicks),
+					clickDrop: clickDropped ? clickDrop : null,
+					daysInHistory: daysAvailable
+				});
+			}
+		});
+		
+		Logger.log(`[${configName}] Detected ${drops.length} performance drops`);
+		return drops;
+		
+	} catch (error) {
+		Logger.log(`[${configName}] Error detecting performance drops: ${error.message}`);
+		return [];
+	}
+}
+
+// Detect recently launched placements based on start date
+function detectLaunchesFromMergedData_(configName, currentData, thresholds, exclusionsData) {
+	try {
+		if (!thresholds || !thresholds.launchDetectionEnabled) {
+			return [];
+		}
+		
+		const launchWindowDays = thresholds.launchWindowDays || 3;
+		const launchMinVolume = thresholds.launchMinVolume || 100;
+		const today = new Date();
+		today.setHours(0, 0, 0, 0);
+		
+		const launches = [];
+		
+		currentData.forEach(placement => {
+			const pid = String(placement.placementId || '').trim();
+			const placementName = String(placement.placementName || '').trim();
+			const siteName = String(placement.siteName || '').trim();
+			const startDate = placement.startDate;
+			const endDate = placement.endDate;
+			const impressions = Number(placement.impressions || 0);
+			const clicks = Number(placement.clicks || 0);
+			
+			if (!pid || !startDate) return;
+			
+			// Check if excluded
+			if (isPlacementExcludedForFlag(exclusionsData, configName, pid, 'launch', placementName, siteName)) {
+				return;
+			}
+			
+			// Check if start date is within launch window
+			const start = new Date(startDate);
+			start.setHours(0, 0, 0, 0);
+			const daysFromStart = Math.floor((today - start) / (1000 * 60 * 60 * 24));
+			
+			// Only flag placements that started within the last N days
+			if (daysFromStart < 0 || daysFromStart > launchWindowDays) {
+				return;
+			}
+			
+			// Check if placement is within first 7 days of flight
+			if (daysFromStart > 7) {
+				return;
+			}
+			
+			// Check minimum volume threshold (impressions OR clicks)
+			if (impressions < launchMinVolume && clicks < launchMinVolume) {
+				return;
+			}
+			
+			// Add to launches
+			launches.push({
+				placementId: pid,
+				placementName: placementName,
+				siteName: siteName,
+				startDate: startDate,
+				endDate: endDate,
+				advertiser: placement.advertiser || '',
+				campaign: placement.campaign || '',
+				creative: placement.creative || '',
+				impressions: impressions,
+				clicks: clicks,
+				daysFromStart: daysFromStart
+			});
+		});
+		
+		Logger.log(`[${configName}] Detected ${launches.length} new launches`);
+		return launches;
+		
+	} catch (error) {
+		Logger.log(`[${configName}] Error detecting launches: ${error.message}`);
+		return [];
+	}
+}
+
+// Extract placement data from merged sheet for caching
+function extractPlacementDataForCache_(sheet, headers) {
+	try {
+		const allData = sheet.getDataRange().getValues();
+		
+		// Find header row
+		let headerRowIndex = -1;
+		for (let i = 0; i < Math.min(allData.length, 20); i++) {
+			const row = allData[i];
+			const normalized = row.map(cell => String(cell || '').toLowerCase().replace(/[^a-z0-9]/g, ''));
+			if (normalized.includes('placementid') || normalized.includes('placement')) {
+				headerRowIndex = i;
+				break;
+			}
+		}
+		
+		if (headerRowIndex === -1) {
+			Logger.log('Could not find header row for cache extraction');
+			return [];
+		}
+		
+		const dataHeaders = allData[headerRowIndex];
+		
+		// Find column indices
+		const getIndex = (name) => {
+			const normalized = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+			return dataHeaders.findIndex(h => String(h || '').toLowerCase().replace(/[^a-z0-9]/g, '') === normalized);
+		};
+		
+		const pidIdx = getIndex('PlacementID');
+		const nameIdx = getIndex('Placement');
+		const siteIdx = getIndex('Site');
+		const startIdx = getIndex('PlacementStartDate');
+		const endIdx = getIndex('PlacementEndDate');
+		const impIdx = getIndex('Impressions');
+		const clicksIdx = getIndex('Clicks');
+		const advertiserIdx = getIndex('Advertiser');
+		const campaignIdx = getIndex('Campaign');
+		const creativeIdx = getIndex('Creative');
+		
+		if (pidIdx === -1 || impIdx === -1 || clicksIdx === -1) {
+			Logger.log('Required columns not found for cache extraction');
+			return [];
+		}
+		
+		// Extract placement data
+		const placementData = [];
+		const seen = new Set();
+		
+		for (let i = headerRowIndex + 1; i < allData.length; i++) {
+			const row = allData[i];
+			const pid = String(row[pidIdx] || '').trim();
+			
+			if (!pid) continue;
+			
+			// Aggregate by placement ID (sum impressions and clicks)
+			if (seen.has(pid)) {
+				const existing = placementData.find(p => p.placementId === pid);
+				if (existing) {
+					existing.impressions += Number(row[impIdx] || 0);
+					existing.clicks += Number(row[clicksIdx] || 0);
+				}
+			} else {
+				seen.add(pid);
+				placementData.push({
+					placementId: pid,
+					placementName: nameIdx !== -1 ? String(row[nameIdx] || '').trim() : '',
+					siteName: siteIdx !== -1 ? String(row[siteIdx] || '').trim() : '',
+					startDate: startIdx !== -1 ? row[startIdx] : null,
+					endDate: endIdx !== -1 ? row[endIdx] : null,
+					impressions: Number(row[impIdx] || 0),
+					clicks: Number(row[clicksIdx] || 0),
+					advertiser: advertiserIdx !== -1 ? String(row[advertiserIdx] || '').trim() : '',
+					campaign: campaignIdx !== -1 ? String(row[campaignIdx] || '').trim() : '',
+					creative: creativeIdx !== -1 ? String(row[creativeIdx] || '').trim() : ''
+				});
+			}
+		}
+		
+		Logger.log(`Extracted ${placementData.length} placements for cache`);
+		return placementData;
+		
+	} catch (error) {
+		Logger.log(`Error extracting placement data for cache: ${error.message}`);
+		return [];
+	}
+}
+
+// Backfill performance history for a config from merged report files
+function backfillPerformanceHistoryForConfig_(configName, daysBack) {
+	try {
+		const config = getAuditConfigByName(configName);
+		if (!config) {
+			Logger.log(`[${configName}] Config not found for backfill`);
+			return { success: false, filesProcessed: 0 };
+		}
+		
+		const mergedFolder = getDriveFolderByPathReadOnly_(config.mergedFolderPath);
+		if (!mergedFolder) {
+			Logger.log(`[${configName}] Merged reports folder not found`);
+			return { success: false, filesProcessed: 0 };
+		}
+		
+		const today = new Date();
+		const tz = Session.getScriptTimeZone();
+		let filesProcessed = 0;
+		
+		// Process last N days of merged reports
+		for (let i = 1; i <= daysBack; i++) {
+			const targetDate = new Date(today);
+			targetDate.setDate(targetDate.getDate() - i);
+			const dateStr = Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd');
+			
+			// Look for merged report file matching this date
+			const files = mergedFolder.getFiles();
+			let found = false;
+			
+			while (files.hasNext()) {
+				const file = files.next();
+				const fileName = file.getName();
+				
+				// Match files like "CM360 Merged Daily Audit YYYY-MM-DD"
+				if (fileName.includes(dateStr)) {
+					try {
+						Logger.log(`[${configName}] Backfilling ${dateStr} from ${fileName}`);
+						const spreadsheet = SpreadsheetApp.open(file);
+						const sheet = spreadsheet.getSheets()[0];
+						
+						// Extract placement data
+						const placementData = extractPlacementDataForCache_(sheet, null);
+						
+						if (placementData.length > 0) {
+							// Save to cache
+							savePerformanceCache_(configName, placementData, dateStr);
+							filesProcessed++;
+							found = true;
+						}
+					} catch (fileError) {
+						Logger.log(`[${configName}] Error processing file ${fileName}: ${fileError.message}`);
+					}
+					break; // Found file for this date
+				}
+			}
+			
+			if (!found) {
+				Logger.log(`[${configName}] No merged report found for ${dateStr}`);
+			}
+		}
+		
+		Logger.log(`[${configName}] Backfill complete: processed ${filesProcessed} of ${daysBack} days`);
+		return { success: true, filesProcessed: filesProcessed };
+		
+	} catch (error) {
+		Logger.log(`[${configName}] Error during backfill: ${error.message}`);
+		return { success: false, filesProcessed: 0, error: error.message };
+	}
+}
+
+// Get backfill state from Script Properties
+function getPerformanceBackfillState_() {
+	try {
+		const raw = PropertiesService.getScriptProperties().getProperty(PERFORMANCE_BACKFILL_STATE_KEY);
+		if (!raw) return null;
+		const state = JSON.parse(raw);
+		state.version = state.version || 1;
+		return state;
+	} catch (e) {
+		Logger.log('getPerformanceBackfillState_ error: ' + e.message);
+		return null;
+	}
+}
+
+// Save backfill state to Script Properties
+function savePerformanceBackfillState_(state) {
+	try {
+		const props = PropertiesService.getScriptProperties();
+		state.version = 1;
+		state.lastUpdated = Date.now();
+		props.setProperty(PERFORMANCE_BACKFILL_STATE_KEY, JSON.stringify(state));
+	} catch (e) {
+		Logger.log('savePerformanceBackfillState_ error: ' + e.message);
+	}
+}
+
+// Clear backfill state from Script Properties
+function clearPerformanceBackfillState_() {
+	try {
+		PropertiesService.getScriptProperties().deleteProperty(PERFORMANCE_BACKFILL_STATE_KEY);
+	} catch (e) {
+		Logger.log('clearPerformanceBackfillState_ error: ' + e.message);
+	}
+}
+
+// Schedule backfill continuation trigger
+function schedulePerformanceBackfillContinuation_() {
+	try {
+		clearPerformanceBackfillContinuation_();
+		const trigger = ScriptApp.newTrigger('continuePerformanceBackfill')
+			.timeBased()
+			.after(30 * 1000) // 30 seconds
+			.create();
+		PropertiesService.getScriptProperties().setProperty(
+			PERFORMANCE_BACKFILL_TRIGGER_ID_KEY,
+			trigger.getUniqueId()
+		);
+		Logger.log(`Scheduled backfill continuation trigger: ${trigger.getUniqueId()}`);
+	} catch (e) {
+		Logger.log('schedulePerformanceBackfillContinuation_ error: ' + e.message);
+	}
+}
+
+// Clear backfill continuation trigger
+function clearPerformanceBackfillContinuation_() {
+	try {
+		const props = PropertiesService.getScriptProperties();
+		const triggerId = props.getProperty(PERFORMANCE_BACKFILL_TRIGGER_ID_KEY);
+		if (triggerId) {
+			const triggers = ScriptApp.getProjectTriggers();
+			for (const trigger of triggers) {
+				if (trigger.getUniqueId() === triggerId) {
+					ScriptApp.deleteTrigger(trigger);
+					Logger.log(`Deleted backfill continuation trigger: ${triggerId}`);
+					break;
+				}
+			}
+			props.deleteProperty(PERFORMANCE_BACKFILL_TRIGGER_ID_KEY);
+		}
+	} catch (e) {
+		Logger.log('clearPerformanceBackfillContinuation_ error: ' + e.message);
+	}
+}
+
+// Main backfill function with yield/resume logic
+function performanceBackfillHistory() {
+	const startTime = Date.now();
+	const maxRuntime = 4 * 60 * 1000; // 4 minutes max runtime
+	
+	try {
+		// Get or initialize state
+		let state = getPerformanceBackfillState_();
+		
+		if (!state) {
+			// First run: load all configs with performance drop enabled
+			const thresholds = loadPerformanceDropThresholdsFromSheet();
+			const configsToBackfill = [];
+			
+			Object.keys(thresholds).forEach(configName => {
+				const threshold = thresholds[configName];
+				// Only backfill if performance drop is enabled and has insufficient historical data
+				if (threshold && threshold.enabled) {
+					const cacheFolderPath = [...PERFORMANCE_CACHE_PATH, configName];
+					const cacheFolder = getDriveFolderByPathReadOnly_(cacheFolderPath);
+					
+					// Check if cache folder doesn't exist OR has fewer than 3 cache files
+					let needsBackfill = false;
+					if (!cacheFolder) {
+						needsBackfill = true;
+					} else {
+						// Count cache files
+						const files = cacheFolder.getFiles();
+						let cacheFileCount = 0;
+						while (files.hasNext()) {
+							const file = files.next();
+							if (file.getName().match(/^cache_\d{4}-\d{2}-\d{2}\.json$/)) {
+								cacheFileCount++;
+								if (cacheFileCount >= 3) break; // Early exit if we have enough
+							}
+						}
+						needsBackfill = cacheFileCount < 3;
+					}
+					
+					if (needsBackfill) {
+						configsToBackfill.push(configName);
+					}
+				}
+			});
+			
+			if (configsToBackfill.length === 0) {
+				Logger.log('No configs need backfilling (all have sufficient historical data)');
+				return;
+			}
+			
+			state = {
+				configs: configsToBackfill,
+				currentIndex: 0,
+				startedAt: Date.now(),
+				totalConfigs: configsToBackfill.length,
+				processedConfigs: []
+			};
+			
+			savePerformanceBackfillState_(state);
+			Logger.log(`Starting backfill for ${state.totalConfigs} configs`);
+		}
+		
+		// Process configs one at a time
+		while (state.currentIndex < state.configs.length) {
+			// Check runtime limit
+			if (Date.now() - startTime > maxRuntime) {
+				Logger.log('Backfill runtime limit reached; scheduling continuation');
+				savePerformanceBackfillState_(state);
+				schedulePerformanceBackfillContinuation_();
+				return;
+			}
+			
+			const configName = state.configs[state.currentIndex];
+			Logger.log(`Backfilling config ${state.currentIndex + 1}/${state.totalConfigs}: ${configName}`);
+			
+			const result = backfillPerformanceHistoryForConfig_(configName, PERFORMANCE_BACKFILL_DAYS);
+			
+			state.processedConfigs.push({
+				configName: configName,
+				success: result.success,
+				filesProcessed: result.filesProcessed,
+				error: result.error || null
+			});
+			
+			state.currentIndex++;
+			savePerformanceBackfillState_(state);
+		}
+		
+		// All done
+		Logger.log(`Backfill complete: processed ${state.totalConfigs} configs`);
+		clearPerformanceBackfillState_();
+		clearPerformanceBackfillContinuation_();
+		
+		// Send completion email to admin
+		const successCount = state.processedConfigs.filter(r => r.success).length;
+		const subject = `✅ Performance Drop Backfill Complete`;
+		const html = `
+			<p style="font-family:Arial, sans-serif; font-size:13px;">
+				Performance drop history backfill completed successfully.
+			</p>
+			<p style="font-family:Arial, sans-serif; font-size:13px;">
+				<strong>Summary:</strong><br>
+				Total configs: ${state.totalConfigs}<br>
+				Successful: ${successCount}<br>
+				Failed: ${state.totalConfigs - successCount}
+			</p>
+			<p style="font-family:Arial, sans-serif; font-size:12px; margin-top:12px;">
+				&mdash; CM360 Audit System
+			</p>
+		`;
+		
+		safeSendEmail({
+			to: ADMIN_EMAIL,
+			subject: subject,
+			htmlBody: html,
+			plainBody: `Performance drop backfill complete: ${successCount}/${state.totalConfigs} successful`
+		}, 'Performance Backfill');
+		
+	} catch (error) {
+		Logger.log(`Error in performanceBackfillHistory: ${error.message}`);
+		
+		// Send error email to admin
+		const subject = `❌ Performance Drop Backfill Error`;
+		const html = `
+			<p style="font-family:Arial, sans-serif; font-size:13px;">
+				Performance drop history backfill encountered an error:
+			</p>
+			<p style="font-family:Arial, sans-serif; font-size:13px;">
+				<strong>Error:</strong> ${escapeHtml(error.message)}
+			</p>
+		`;
+		
+		safeSendEmail({
+			to: ADMIN_EMAIL,
+			subject: subject,
+			htmlBody: html,
+			plainBody: `Backfill error: ${error.message}`
+		}, 'Performance Backfill Error');
+	}
+}
+
+// Continuation function for backfill
+function continuePerformanceBackfill() {
+	Logger.log('Continuing performance backfill...');
+	performanceBackfillHistory();
 }
 
 // === CONFIG LIST HELPERS (migrated from archive, adapted to Properties) ===
