@@ -16,6 +16,44 @@ Both features add color-coded sections directly into your daily audit emails—n
 
 ---
 
+## Important: How Configuration Works 🔄
+
+### The Two-Spreadsheet System
+
+This system uses a **controlled configuration workflow** to prevent accidental tampering:
+
+**📊 Step 1: External Helper Menu (Team Access)**
+- **Your team edits here:** [CM360 Audit Configuration - Helper Menu](https://docs.google.com/spreadsheets/d/1-566gqkyZRNDeNtXWUjKDB_H8A9XbhCu8zL-uaZdGT8/edit?gid=6873511#gid=6873511)
+- This is where ad ops team members add configs, set thresholds, manage exclusions
+- Safe for the larger team to use—designed to minimize mistakes
+- Changes here don't affect the system until synced
+
+**⚙️ Step 2: Admin Spreadsheet (Automated Sync)**
+- The admin spreadsheet receives updates from the Helper Menu via sync functions
+- This is what the daily audit scripts actually read from
+- Admins can manually sync: `Admin Controls → Sync FROM External Config`
+
+**🔄 Step 3: Processing (Automatic)**
+- Daily audits read configuration from the Admin spreadsheet
+- Performance drop thresholds, launch detection settings, all configuration is processed here
+- The system runs automatically based on these settings
+
+### Why This Matters for You
+
+**If you're on the ad ops team:**
+- ✅ Use the [Helper Menu spreadsheet](https://docs.google.com/spreadsheets/d/1-566gqkyZRNDeNtXWUjKDB_H8A9XbhCu8zL-uaZdGT8/edit?gid=6873511#gid=6873511) to configure performance drops
+- ✅ Changes are isolated until an admin syncs them
+- ✅ Reduces risk of breaking production audits
+
+**If you're an admin:**
+- ✅ Review changes in Helper Menu before syncing
+- ✅ Run sync when ready: `Admin Controls → Sync FROM External Config`
+- ✅ Monitor sync logs for any issues
+
+💡 **Throughout this guide, when we say "open the configuration sheet," we mean the Helper Menu spreadsheet linked above.**
+
+---
+
 ## How Does This Work Behind the Scenes?
 
 ### Performance Drop Detection: Your Campaign's Watchdog
@@ -48,11 +86,11 @@ This feature is simpler—it just watches for:
 ## Your Configuration Sheet: The Control Center
 
 **First, let's open it:**
-1. Open your CM360 Audit configuration spreadsheet
-2. Look for **Admin Controls** in the top menu
-3. Click **→ Performance Drop Thresholds**
+1. Open the **[CM360 Audit Configuration - Helper Menu](https://docs.google.com/spreadsheets/d/1-566gqkyZRNDeNtXWUjKDB_H8A9XbhCu8zL-uaZdGT8/edit?gid=6873511#gid=6873511)** spreadsheet
+2. Navigate to the **Performance Drop Thresholds** tab (look for it in the bottom tabs)
+3. If the tab doesn't exist yet, ask an admin to create it via: `Admin Controls → Performance Drop Thresholds`
 
-A new sheet will appear with 11 columns. Don't worry—you only need to fill in what matters to you. Here's what each column does:
+A sheet with 11 columns will be visible. Don't worry—you only need to fill in what matters to you. Here's what each column does:
 
 | Column | Name | Type | Default | Description |
 |--------|------|------|---------|-------------|
@@ -435,9 +473,11 @@ Both sections appear **after** the regular flagged placements table:
 4. **Narrow Launch Window**: 5 → 3 days (fewer launches)
 
 **Or exclude specific troublemakers:**
-1. Go to **Admin Controls → Audit Exclusions**
-2. Add row: `[Config Name] | [Placement ID] | performance_drop | TRUE`
-3. That placement won't trigger drop alerts anymore
+1. Go to the **[Helper Menu spreadsheet](https://docs.google.com/spreadsheets/d/1-566gqkyZRNDeNtXWUjKDB_H8A9XbhCu8zL-uaZdGT8/edit?gid=6873511#gid=6873511)**
+2. Navigate to **Audit Exclusions** tab
+3. Add row: `[Config Name] | [Placement ID] | performance_drop | TRUE`
+4. Ask admin to sync changes
+5. That placement won't trigger drop alerts anymore
 
 ---
 
@@ -510,10 +550,11 @@ Launch Detection: OFF (don't care about new)
 - Miss real issues on other placements
 
 **Right approach:**
-1. Add placement 12345 to Audit Exclusions
+1. Add placement 12345 to Audit Exclusions in the [Helper Menu](https://docs.google.com/spreadsheets/d/1-566gqkyZRNDeNtXWUjKDB_H8A9XbhCu8zL-uaZdGT8/edit?gid=6873511#gid=6873511)
 2. Set flag type: `performance_drop`
-3. Keep monitoring everything else
-4. Remove exclusion when fixed
+3. Request admin sync
+4. Keep monitoring everything else
+5. Remove exclusion when fixed
 
 **Think surgical, not nuclear!**
 
@@ -575,9 +616,79 @@ Share this guide with:
 - **Analytics Team**: So they can correlate drops with external factors
 
 ---
+System Architecture (For Reference)
 
-## Technical Details
+### How Configuration Flows Through the System
 
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. Helper Menu Spreadsheet (Team Access)                  │
+│  https://docs.google.com/.../1-566gqkyZRNDeNtXWUjKDB...    │
+│                                                             │
+│  - Audit Recipients                                         │
+│  - Audit Thresholds                                         │
+│  - Audit Exclusions                                         │
+│  - Performance Drop Thresholds  ← You edit here            │
+│                                                             │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       │ Admin runs:
+                       │ "Sync FROM External Config"
+                       ↓
+┌─────────────────────────────────────────────────────────────┐
+│  2. Admin Spreadsheet (System Processing)                   │
+│                                                             │
+│  - Same sheets, synced from Helper Menu                     │
+│  - Daily audits read configuration from here                │
+│  - Admins can also "Sync TO External Config"                │
+│                                                             │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       │ Daily audit runs
+                       │ (triggered automatically)
+                       ↓
+┌─────────────────────────────────────────────────────────────┐
+│  3. CM360 Audit Processing                                  │
+│                                                             │
+│  - Reads Performance Drop Thresholds settings               │
+│  - Saves daily cache files to Drive                         │
+│  - Detects drops by comparing to 3-day average              │
+│  - Detects launches based on start dates                    │
+│  - Adds colored sections to emails                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Where Data Lives
+
+**Configuration:**
+- **Helper Menu Spreadsheet**: ID `1-566gqkyZRNDeNtXWUjKDB_H8A9XbhCu8zL-uaZdGT8`
+- **Admin Spreadsheet**: Bound to the main Apps Script project
+
+**Performance Cache Files:**
+- **Location**: `Project Log Files/CM360 Daily Audits/Performance Drop Cache/[ConfigName]/`
+- **Format**: JSON files named `cache_YYYY-MM-DD.json`
+- **Retention**: 7 days (auto-cleanup)
+- **Size**: ~10-50KB per file depending on placement count
+
+**Daily Reports:**
+- **Temp Files**: `Project Log Files/CM360 Daily Audits/Temp Daily Reports/[ConfigName]/`
+- **Merged Reports**: `Project Log Files/CM360 Daily Audits/Merged Reports/[ConfigName]/`
+
+### Sync Frequency
+
+**Configuration updates:**
+- Manual sync: Admin runs `Sync FROM External Config` as needed
+- Nightly sync: Automatic sync runs overnight (optional trigger)
+- Changes take effect on next audit run after sync
+
+**Audit runs:**
+- Daily batches: Typically run early morning (e.g., 6 AM)
+- Manual runs: Available via `Run Audit → Single Config` menu
+
+**Cache cleanup:**
+- Automatic: When saving new cache files
+- Retention: 7 days of historical data kept
 ### Cache File Structure
 
 Each cache file contains:
