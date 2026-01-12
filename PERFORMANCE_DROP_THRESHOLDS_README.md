@@ -1,48 +1,58 @@
-# Performance Drop Thresholds & Launch Detection
+# Performance Drop Thresholds & Launch Detection Setup Guide
 
-## Overview
+## Welcome to Advanced Campaign Monitoring! 👋
 
-The **Performance Drop Thresholds** feature provides automated monitoring for two critical scenarios in your CM360 campaigns:
+This guide will help you set up two powerful monitoring features that work alongside your existing CM360 Daily Audits:
 
-1. **Performance Drops**: Detects when active placements experience significant drops in impressions or clicks compared to their recent performance history
-2. **Launch Detection**: Identifies newly launched placements to provide immediate visibility into campaign starts
+### What You'll Be Able to Do:
 
-Both features integrate seamlessly into your existing CM360 Daily Audit emails, adding dedicated sections when issues are detected.
+**1. Performance Drop Detection** 🚨
+Automatically catch when your campaigns suddenly lose steam. The system watches your placements every day and alerts you when impressions or clicks drop significantly compared to recent performance—helping you spot delivery issues before they become major problems.
 
----
+**2. Launch Detection** 🚀
+Never miss when new campaigns go live. Get immediate visibility into placements that just launched, so you can monitor their initial performance and ensure they're delivering as expected.
 
-## How It Works
-
-### Performance Drop Detection
-
-The system automatically:
-- **Saves daily snapshots** of all placement performance (impressions & clicks) to Google Drive
-- **Compares yesterday's data** against a 3-day rolling average
-- **Flags placements** that dropped by your specified percentage threshold
-- **Respects grace periods** to avoid false positives during campaign ramp-up
-- **Excludes low-volume placements** based on minimum thresholds you set
-
-**Technical Details:**
-- Historical data is cached in Drive under: `Project Log Files/CM360 Daily Audits/Performance Drop Cache/[ConfigName]/`
-- Cache files are automatically cleaned up after 7 days
-- On first enable, the system backfills up to 4 days of historical data
-- Rolling averages use partial data for early flight days (Day 2 = 1-day avg, Day 3 = 2-day avg, Day 4+ = 3-day avg)
-
-### Launch Detection
-
-The system automatically:
-- **Scans all placements** in yesterday's audit data
-- **Identifies placements** where the Start Date is within your specified launch window (e.g., last 3 days)
-- **Filters by volume** to exclude test placements below your minimum threshold
-- **Only flags placements** in their first 7 days of flight
+Both features add color-coded sections directly into your daily audit emails—no extra systems to check, just enhanced information in the reports you're already receiving.
 
 ---
 
-## Sheet Structure & Configuration
+## How Does This Work Behind the Scenes?
 
-Access the configuration sheet via: **Admin Controls → Performance Drop Thresholds**
+### Performance Drop Detection: Your Campaign's Watchdog
 
-### Column Reference
+Think of this as having a smart assistant who:
+1. **Takes daily snapshots** of every placement's performance (impressions & clicks)
+2. **Remembers the last 3 days** to understand what's "normal" for each placement
+3. **Compares yesterday** to that 3-day average
+4. **Alerts you** only when drops exceed your threshold—not for normal day-to-day fluctuations
+
+**Why 3 days?** It's the sweet spot—long enough to avoid false alarms from single-day blips, but short enough to catch real issues quickly.
+
+**Smart features you'll appreciate:**
+- **Grace periods**: Skips the first few days of a campaign so you don't get alerts during normal ramp-up
+- **Volume filters**: Ignores test placements and low-traffic items that naturally fluctuate
+- **Automatic cleanup**: Old data files are removed after 7 days—no Drive clutter
+- **First-time setup**: When you enable it, the system automatically backfills 4 days of history so you don't have to wait
+
+### Launch Detection: Your New Campaign Spotter
+
+This feature is simpler—it just watches for:
+1. **Placements with recent start dates** (you choose how many days back to look)
+2. **Enough volume to matter** (filters out test placements)
+3. **Still in their first week** (after that, they're not "new" anymore)
+
+**Perfect for:** Catching campaigns that launched but you didn't know about, or verifying planned launches actually went live on schedule.
+
+---
+
+## Your Configuration Sheet: The Control Center
+
+**First, let's open it:**
+1. Open your CM360 Audit configuration spreadsheet
+2. Look for **Admin Controls** in the top menu
+3. Click **→ Performance Drop Thresholds**
+
+A new sheet will appear with 11 columns. Don't worry—you only need to fill in what matters to you. Here's what each column does:
 
 | Column | Name | Type | Default | Description |
 |--------|------|------|---------|-------------|
@@ -57,118 +67,221 @@ Access the configuration sheet via: **Admin Controls → Performance Drop Thresh
 | **I** | Active | TRUE/FALSE | TRUE | Master on/off switch (FALSE = completely disabled) |
 | **J** | Last Updated | Auto | - | System-managed timestamp |
 | **K** | INSTRUCTIONS | Text | - | Column explanations (do not edit) |
+Let's Set This Up (Follow Along!)
+
+### Your First Setup: A 5-Minute Walkthrough
+
+**What you'll need:**
+- Your config name (the same one you see in Audit Recipients sheet)
+- 5 minutes of focused time
+- This guide open in another tab
 
 ---
 
-## Step-by-Step Setup Guide
+#### **Step 1: Find Your Configuration Sheet** 📋
 
-### For Ad Ops Team Members
+1. Open your CM360 Audit spreadsheet (the one you check every day)
+2. Look at the **top menu bar** → find **Admin Controls**
+3. Click **Admin Controls → Performance Drop Thresholds**
+4. A new sheet pops up with a yellow header row and empty rows below
 
-#### **Step 1: Open the Configuration Sheet**
+✅ **You should see:** Columns labeled "Config Name", "Enable Performance Drop", "Drop Percentage Threshold", etc.
 
-1. Open your CM360 Audit configuration spreadsheet
-2. Go to **Admin Controls** menu (top menu bar)
-3. Click **→ Performance Drop Thresholds**
-4. A new sheet will appear with pre-formatted columns
+---
 
-#### **Step 2: Add Your Config**
+#### **Step 2: Add Your Config Name** ✏️
 
-1. Find an empty row (below the header)
-2. In **Column A (Config Name)**, enter your config name exactly as it appears in Audit Recipients sheet
-   - Example: `LION01`, `PST01`, `NEXTSD01`
-   - ⚠️ **Must match exactly** (case-sensitive)
+1. Click on **cell A2** (first empty row under the header)
+2. Type your config name **exactly** as it appears elsewhere (case matters!)
+   - Examples: `LION01`, `PST01`, `NEXTSD01`
+   - ⚠️ If you're not sure, check the **Audit Recipients** sheet—copy it from there
 
-#### **Step 3: Configure Performance Drop Detection** (Optional)
+💡 **Pro tip:** If your name has a typo, the system won't find your config. When in doubt, copy-paste from Recipients sheet!
 
-If you want to detect performance drops:
+---
 
-1. **Column B (Enable Performance Drop)**: Enter `TRUE`
-2. **Column C (Drop Percentage Threshold)**: Enter percentage
-   - `50` = flag if drops by 50% or more
-   - `30` = flag if drops by 30% or more (more sensitive)
-   - `70` = flag if drops by 70% or more (less sensitive)
-3. **Column D (Min Volume Threshold)**: Enter minimum daily volume
-   - `200` = only flag if placement normally gets 200+ impressions OR clicks
-   - `500` = only flag higher-volume placements
-   - `100` = flag lower-volume placements too
-4. **Column E (Grace Period Days)**: Enter ramp-up days to skip
-   - `0` = check from Day 1 of flight
-   - `3` = start checking on Day 4 (skip first 3 days)
-   - `7` = start checking on Day 8 (skip first week)
+#### **Step 3: Set Up Performance Drop Detection** 🚨
+*Skip this section if you only want launch detection*
 
-#### **Step 4: Configure Launch Detection** (Optional)
+**Follow this mini-questionnaire:**
 
-If you want to detect new launches:
+**Question 1: Do you want performance drop alerts?**
+- **YES** → Enter `TRUE` in **Column B**
+- **NO** → Enter `FALSE` and skip to Step 4
 
-1. **Column F (Enable Launch Detection)**: Enter `TRUE`
-2. **Column G (Launch Window Days)**: Enter lookback window
-   - `3` = flag placements that started in last 3 days
-   - `5` = flag placements that started in last 5 days
-   - `1` = only flag placements that started yesterday
-3. **Column H (Launch Min Volume)**: Enter minimum launch volume
-   - `100` = only flag if placement has 100+ impressions OR clicks
-   - `50` = flag lower-volume launches too
-   - `200` = only flag higher-volume launches
+**Question 2: How sensitive should alerts be?**
+Choose one and enter in **Column C**:
+- `30` = Very sensitive (catch small dips, more emails)
+- `50` = Balanced (recommended for most campaigns)
+- `70` = Less sensitive (only big problems, fewer emails)
 
-#### **Step 5: Activate the Config**
+**Question 3: What counts as "significant" volume?**
+Choose one and enter in **Column D**:
+- `100` = Include smaller placements (more comprehensive)
+- `200` = Standard placements (recommended starting point)
+- `500` = Only high-traffic placements (enterprise campaigns)
 
-1. **Column I (Active)**: Enter `TRUE`
-2. Press **Enter** to save
-3. The system will automatically update **Column J (Last Updated)** with a timestamp
+💬 **What this means:** If you choose 200, placements averaging 150 impressions per day won't trigger alerts even if they drop 100%. This filters out noise from low-volume placements.
 
-#### **Step 6: Verify Setup**
+**Question 4: Should we skip the first few days?**
+Choose one and enter in **Column E**:
+- `0` = Alert from Day 1 (use for time-sensitive campaigns)
+- `3` = Skip first 3 days (recommended—gives campaigns time to ramp)
+- `7` = Skip first week (use for slow-building campaigns)
 
-Run a manual audit to test:
-1. Go to **Run Audit** menu
+💬 **Why this matters:** New campaigns often start slow and build up. A "grace period" prevents false alarms during normal ramp-up.
+
+---
+
+#### **Step 4: Set Up Launch Detection** 🚀
+*Skip this section if you only want performance drops*
+
+**Follow this mini-questionnaire:**
+
+**Question 1: Do you want to know about new launches?**
+- **YES** → Enter `TRUE` in **Column F**
+- *Real-World Setup Examples (Copy These!)
+
+Not sure what settings to use? Here are three proven configurations you can copy directly:
+
+---
+
+### Example 1: "I Manage Large, Stable Campaigns"
+Choose one and enter in **Column G**:
+- `1` = Only show placements that launched yesterday
+- `3` = Show launches from last 3 days (recommended)
+- `5` = Show launches from last 5 days (good for weekly reviews)
+
+**Question 3: What's the minimum volume to care about?**
+Choose one and enter in **Column H**:
+- `50` = Include test placements (very comprehensive)
+- `100` = Standard launches (recommended)
+- `200` = Only significant launches (reduces noise)
+
+💬 **What this means:** Placements with fewer impressions/clicks than this won't appear in launch reports—filters out tests and inactive placements.
+
+---
+
+#### **Step 5: Activate It!** ✅
+
+1. In **Column I**, enter `TRUE`
+2. Press **Enter**
+3. Watch **Column J** auto-fill with today's date/time
+
+🎉 **You're done with configuration!**
+
+---
+
+#### **Step 6: Test It (5 Minutes)** 🧪
+
+Let's make sure it works:
+
+1. Go back to the top menu → **Run Audit**
 2. Click **→ Single Config**
-3. Select your config name
-4. Check the execution log for:
-   - `"Loaded performance drop thresholds from sheet for 1 configs"`
+3. Pick your config name from the list
+4. Click **Select**
+
+**While it runs**, watch for these log messages:
+```
+✅ "Loaded performance drop thresholds from sheet for 1 configs"
+✅ "Running launch detection" (if you enabled it)
+✅ "Saved performance cache for [date]" (if performance drops enabled)
+✅ "🚩 Detected N performance drops" (if any found)
+✅ "🚀 Detected N new launches" (if any found)
+```
+
+**Don't see these messages?**
+- Check that Column I (Active) is `TRUE`
+- Verify your config name in Column A matches exactly
+- Make sure either Column B or Column F is `TRUE`
+
+---
+
+#### **Step 7: Wait for Your First Email** 📧
+
+**For Performance Drops:**
+- First audit run saves a snapshot but won't detect drops yet (no history to compare)
+- Tomorrow's audit will have 1 day of history (limited detection)
+- Day after that, you'll get full 3-day average comparisons
+
+**For Launch Detection:**
+- Works immediately—you'll see results in your next daily audit email (if any placements launched recently)
+
+✨ **When it's working:** You'll see new colored sections in your daily emails (yellow for drops, green for launcheseet for 1 configs"`
    - `"Running launch detection"` (if enabled)
    - `"🚩 Detected N performance drops"` (if any found)
    - `"🚀 Detected N new launches"` (if any found)
 
 ---
+You have:** Established campaigns with predictable traffic. You don't need every little blip—just the serious issues.
 
-## Configuration Examples
-
-### Example 1: Conservative Performance Monitoring
-**Use Case**: Large, stable campaigns where you only want to know about major issues
-
+**Copy this setup:**
 ```
-Config Name: LION01
-Enable Performance Drop: TRUE
-Drop Percentage Threshold: 70
-Min Volume Threshold: 500
-Grace Period Days: 3
-Enable Launch Detection: FALSE
-Active: TRUE
-```
-
-**Result**: Only flags if impressions/clicks drop by 70%+ on placements with 500+ daily volume, after a 3-day ramp-up period.
-
----
-
-### Example 2: Aggressive Monitoring + Launch Tracking
-**Use Case**: New or critical campaigns where you want early warning of any issues
-
-```
-Config Name: PST01
-Enable Performance Drop: TRUE
-Drop Percentage Threshold: 30
-Min Volume Threshold: 100
-Grace Period Days: 0
-Enable Launch Detection: TRUE
-Launch Window Days: 5
-Launch Min Volume: 50
-Active: TRUE
+Column A: LION01              (your config name)
+Column B: TRUE                (performance drops on)
+Column C: 70                  (only major drops)
+Column D: 500                 (high-volume placements only)
+Column E: 3                   (skip 3-day ramp-up)
+Column F: FALSE               (launches off)
+Column G: 3                   (default)
+Column H: 100                 (default)
+Column I: TRUE                (active)
 ```
 
-**Result**: Flags drops of 30%+ on any placement with 100+ volume, checks from Day 1, AND flags all new placements started in last 5 days with 50+ volume.
+**What to expect:** 
+- Quiet days when things run smoothly
+- Alerts only when something is seriously wrong (70%+ drop)
+- Focus on placements that really matter (500+ daily impressions/clicks)
+**You have:** Critical campaigns or new client launches. You want to spot issues before they escalate.
 
----
+**Copy this setup:**
+```
+Column A: PST01               (your config name)
+Column B: TRUE                (performance drops on)
+Column C: 30                  (sensitive to smaller drops)
+Column D: 100                 (include most placements)
+Column E: 0                   (alert from day 1)
+Column F: TRUE                (launches on)
+Column G: 5                   (5-day launch window)
+Column H: 50                  (include smaller launches)
+Column I: TRUE                (active)
+```
 
-### Example 3: Launch Detection Only
+**What to expect:**
+- More frequent alerts (you'll catch issues faster)
+- Visibility into smaller placements
+- Immediate detection (no grace period)
+- Full awareness of new launches
+- More emails during campaign setup periods
+
+💡 **Good for:** New clients, test campaigns, time-sensitive promotions, high-stakes launches
+**You have:** Good monitoring elsewhere. You just need to know when campaigns go live.
+
+**Copy this setup:**
+```
+Column A: NEXTSD01            (your config name)
+Column B: FALSE               (performance drops off)
+Column C: 50                  (not used)
+Column D: 200                 (not used)
+Column E: 0                   (not used)
+Column F: TRUE                (launches on!)
+Column G: 3                   (last 3 days)
+Column H: 100                 (standard threshold)
+Column I: TRUE                (active)
+```
+
+**What to expect:**
+- Clean, simple launch notifications
+- No performance drop alerts
+- See what went live in the last 3 days
+- Verify planned launches actually launched
+- Catch unplanned or early launches
+
+💡 What Your Emails Will Look Like
+
+### When Performance Drops Are Detected
+
+Here's what appears in your daily audit email—a **yellow-highlighted section** that stands out see. You can change settings anytime!
 **Use Case**: You just want visibility into new campaign starts
 
 ```
@@ -193,18 +306,20 @@ Active: TRUE
 
 When performance drops are detected, a **yellow-highlighted section** appears in your daily audit email:
 
-```
-⚠️ Performance Drops Detected (3)
+``Why you'll love this format:**
+- **Yellow background** = impossible to miss
+- **Side-by-side comparison** = see exactly what dropped (3-day avg → yesterday)
+- **Percentage drops** = understand severity at a glance
+- **Full context** = advertiser, campaign, site, placement ID all included
+- **Smart display** = only shows metrics that actually dropped
 
-The following placements show significant performance drops compared to their 
-3-day average. This may indicate delivery issues:
+💡 **Pro tip:** Forward these sections to your media buyers—they have everything needed to investigate!
 
-┌────────────────────────────────────────────────────────────────────────┐
-│ Advertiser | Campaign      | Site    | Placement           | ID      │
-│ ABC Corp   | Spring Sale   | Google  | Display 728x90      | 123456  │
-│            |               |         | 3-Day Avg vs Yesterday         │
-│            |               |         | Impr: 5,234 → 1,102 (-79%)     │
-│            |               |         | Clicks: 156 → 38 (-76%)        │
+---
+
+### When New Launches Are Detected
+
+Here's what appears—a **green-highlighted section** for positive visibility
 ├────────────────────────────────────────────────────────────────────────┤
 │ ABC Corp   | Spring Sale   | Facebook| Video Pre-Roll      | 123457  │
 │            |               |         | 3-Day Avg vs Yesterday         │
@@ -230,18 +345,20 @@ The following placements show significant performance drops compared to their
 When new placements are detected, a **green-highlighted section** appears in your daily audit email:
 
 ```
-🚀 New Launches Detected (2)
+🚀Why you'll love this format:**
+- **Green background** = positive association (new = good!)
+- **Launch timing** = see exactly when each went live
+- **Current metrics** = verify they're actually delivering
+- **Early awareness** = catch issues in first week when fixes are easiest
+- **Planning verification** = confirm scheduled launches happened
 
-The following placements recently went live. Monitor their initial performance:
+💡 **Use case:** Client asks "Did the new campaign launch yesterday?" → Check your email, instant answer!
 
-┌────────────────────────────────────────────────────────────────────────┐
-│ Advertiser | Campaign      | Site    | Placement           | Launched │
-│ ABC Corp   | Summer Launch | Google  | Display 728x90      | Today    │
-│            |               |         | Impressions: 2,345             │
-│            |               |         | Clicks: 87                     │
-├────────────────────────────────────────────────────────────────────────┤
-│ XYZ Brand  | New Product   | Facebook| Video 16:9          | 2 days   │
-│            |               |         | Impressions: 8,921             │
+---
+
+### Where These Sections Appear
+
+Both features add sections **after** your regular audit flags, before the footer     │
 │            |               |         | Clicks: 234                    │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -258,111 +375,180 @@ The following placements recently went live. Monitor their initial performance:
 ### Email Positioning
 
 Both sections appear **after** the regular flagged placements table:
-
-```
-⚠️ CM360 Daily Audit: Issues Detected (LION01 - 2026-01-12)
-
-[Regular Flagged Placements Table]
-↓
-
-⚠️ Performance Drops Detected (3)
-[Performance drop details]
-↓
-
-🚀 New Launches Detected (2)
-[Launch details]
-↓
-
+┌─────────────────────────────────────────────────┐
+│ [Your regular audit flags table]                │
+│ (Threshold violations, pixel mismatches, etc.) │
+└─────────────────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────┐
+│ ⚠️ Performance Drops Detected (3)               │
+│ [Yellow highlighted drop details]              │
+└─────────────────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────┐
+│ 🚀 New Launches Detected (2)                    │
+│ [Green highlighted launch details]             │
+└─────────────────────────────────────────────────┘
+                      ↓
 — Platform Solutions Team
+```Common Questions & Quick Fixes
+
+### "I set it up but don't see any drops" 🤔
+
+**Most likely reason:** You need 24 hours of history first.
+
+**Here's what's happening:**
+- Day 1 (today): System saves a snapshot but has nothing to compare against yet
+- Day 2 (tomorrow): System compares against Day 1 data (limited history)
+- Day 3+: Full 3-day rolling average kicks in
+
+**Quick checks:**
+1. Did you enable it today? **→** Be patient, check tomorrow's email
+2. Grace Period set to 3+ days? **→** Placements in first 3 days won't be flagged
+3. Min Volume too high? **→** Lower it to 100 and test
+4. Drop % too high? **→** Try 50% to start
+5. Config name typo? **→** Must match Recipients sheet exactly
+
+---
+
+### "Launch detection isn't showing anything" 🚀
+
+**Most likely reason:** No placements launched recently within your window.
+
+**Quick checks:**
+1. Column F set to `TRUE`? **→** Must be enabled
+2. Launch Window too narrow? **→** Try 5 days instead of 1
+3. Launch Min Volume too high? **→** Try 50 to catch more
+4. Placements older than 7 days? **→** Only works for first week
+5. Check the actual placement start dates in your merged reports **→** Might be older than you think
+
+---
+
+### "Getting too many alerts" 📧
+
+**Good news:** You can dial it down!
+
+**Quick fixes:**
+1. **Increase Drop %**: 50 → 70 (only severe drops)
+2. **Increase Min Volume**: 200 → 500 (only major placements)
+3. **Add Grace Period**: 0 → 3 days (skip ramp-up)
+4. **Narrow Launch Window**: 5 → 3 days (fewer launches)
+
+**Or exclude specific troublemakers:**
+1. Go to **Admin Controls → Audit Exclusions**
+2. Add row: `[Config Name] | [Placement ID] | performance_drop | TRUE`
+3. That placement won't trigger drop alerts anymore
+
+---
+
+### "System seems slow / not working" ⚙️
+
+**Cache/backfill issues:**
+
+**If backfill didn't auto-run:**
+- Only triggers when you first enable AND have <3 cache files
+- Manual trigger: Apps Script Editor → Run `performanceBackfillHistory`
+- Look for log: `"Starting backfill for N configs"`
+
+**If cache files are missing:**
+- Check Drive: `Project Log Files/CM360 Daily Audits/Performance Drop Cache/YourConfig/`
+- Should see files named `cache_2026-01-12.json`
+- If missing, run one manual audit to create first file
+
+---
+
+###Pro Tips from the Ad Ops Team
+
+### 🎯 Tip 1: Start Gentle, Adjust Based on Reality
+
+**Week 1 setup (recommended):**
+```
+Drop %: 50
+Min Volume: 200
+Grace Period: 3
+Launch Window: 3
 ```
 
----
+**After 1-2 weeks:**
+- Too many alerts? Dial up thresholds
+- Missing real issues? Dial down thresholds
+- You'll find your sweet spot quickly!
 
-## Troubleshooting
-
-### "No performance drops detected but I expected some"
-
-**Check:**
-1. **Grace Period**: Are the placements within the grace period? If Grace Period = 3, placements in their first 3 days won't be flagged.
-2. **Min Volume**: Do the placements meet the minimum volume threshold? Average must be >= Min Volume Threshold.
-3. **Drop %**: Is the drop severe enough? A 40% drop won't trigger if threshold is 50%.
-4. **Historical Data**: First-time enable needs 1 day of history. Run audit once, wait 24 hours, then drops will be detected.
-5. **Exclusions**: Check if placement is in Audit Exclusions sheet with "performance_drop" flag type.
+**Don't try to be perfect on Day 1**—it's easier to adjust after seeing actual results.
 
 ---
 
-### "Backfill didn't run automatically"
+### 🎯 Tip 2: Different Configs = Different Needs
 
-**Backfill triggers when:**
-- Performance Drop is enabled for first time
-- Less than 3 cache files exist for the config
+**Match settings to campaign reality:**
 
-**Manual trigger:**
-1. Open Apps Script Editor
-2. Run function: `performanceBackfillHistory`
-3. Check logs for: `"Starting backfill for N configs"`
+**For high-stakes launches (new clients, big budgets):**
+```
+Drop %: 30 (sensitive)
+Min Volume: 100 (comprehensive)
+Grace Period: 0 (immediate)
+Launch Detection: ON (awareness++)
+```
 
----
+**For evergreen campaigns (been running 6+ months):**
+```
+Drop %: 70 (only serious issues)
+Min Volume: 500 (major placements only)
+Grace Period: 5 (skip slow starts)
+Launch Detection: OFF (don't care about new)
+```
 
-### "Launch detection isn't flagging new placements"
-
-**Check:**
-1. **Enable Launch Detection**: Column F must be `TRUE`
-2. **Launch Window**: Is the placement start date within the window? If window = 3 days, only placements started in last 3 days are flagged.
-3. **Min Volume**: Does the placement have enough volume? Must have >= Launch Min Volume impressions OR clicks.
-4. **First 7 Days**: Launch detection only works for placements in their first 7 days of flight.
-5. **Exclusions**: Check if placement is excluded with "launch" flag type.
-
----
-
-### "Too many false positives"
-
-**Adjust thresholds:**
-- **Increase Drop %**: Change from 50 → 70 (only flag severe drops)
-- **Increase Min Volume**: Change from 200 → 500 (only flag high-volume placements)
-- **Add Grace Period**: Change from 0 → 3 (skip first 3 days of ramp-up)
-- **Increase Launch Min Volume**: Change from 100 → 200 (only flag higher-volume launches)
-
-**Or add specific exclusions:**
-1. Go to **Admin Controls → Audit Exclusions**
-2. Add row with placement ID and flag type `performance_drop` or `launch`
+**One size does NOT fit all!**
 
 ---
 
-### "Cache files taking up Drive space"
+### 🎯 Tip 3: Use Exclusions for One-Off Problems
 
-**Cache cleanup is automatic:**
-- Files older than 7 days are deleted automatically
-- Located at: `Project Log Files/CM360 Daily Audits/Performance Drop Cache/[ConfigName]/`
-- Each file is ~10-50KB depending on placement count
-- Typical config uses ~300KB total (7 days × ~40KB/day)
+**Wrong approach:**
+- Placement 12345 keeps alerting
+- Turn off performance drops entirely
+- Miss real issues on other placements
 
-**Manual cleanup:**
-1. Navigate to the cache folder in Google Drive
-2. Delete old JSON files manually
-3. Or run: `cleanupOldPerformanceCache_()` from Apps Script
+**Right approach:**
+1. Add placement 12345 to Audit Exclusions
+2. Set flag type: `performance_drop`
+3. Keep monitoring everything else
+4. Remove exclusion when fixed
+
+**Think surgical, not nuclear!**
 
 ---
 
-## Best Practices
+### 🎯 Tip 4: Launch Detection is Your Campaign Calendar
 
-### 1. Start Conservative
-Begin with:
-- Drop % = 50 (moderate sensitivity)
-- Min Volume = 200 (filters low-volume noise)
-- Grace Period = 3 (skip ramp-up)
-- Launch Window = 3 days
+**Cool use cases we've seen:**
 
-Monitor results for 1-2 weeks, then adjust.
+✅ **Verify launch schedules**: "Campaign supposed to start Monday—did it?"
+✅ **Catch early launches**: "This wasn't supposed to go live until Friday!"
+✅ **Spot forgotten campaigns**: "Oh right, that test campaign from last week"
+✅ **Client reporting**: "Here's what launched this week" (screenshot the green section)
 
-### 2. Segment by Campaign Type
+**Set it to 5-7 days for weekly reviews, 1-3 days for daily monitoring.**
 
-**High-Stakes Campaigns:**
-- Lower thresholds (30-40% drop)
-- No grace period
-- Enable launch detection
+---
 
-**Evergreen/Stable Campaigns:**
+### 🎯 Tip 5: Involve Your Team (They'll Thank You)
+
+**Share with media planners:**
+- "Here's how the monitoring works"
+- "Grace periods = your ramp-up isn't flagged"
+- "You'll see yellow sections in emails when issues happen"
+
+**Share with campaign managers:**
+- "Green sections = launches you need to watch"
+- "Yellow sections = delivery problems that need investigation"
+- "Forward these sections when escalating to vendors"
+
+**Share with analytics team:**
+- "Check performance drops against external factors (holidays, news events)"
+- "Help us tune thresholds based on normal variance"
+
+**Everyone seeing the same data = faster problem resolution!**
 - Higher thresholds (60-70% drop)
 - 3-5 day grace period
 - Launch detection optional
