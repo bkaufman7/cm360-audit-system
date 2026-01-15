@@ -348,13 +348,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🔒 Security
 
-Security issues should be reported privately to evan.schneider98@gmail.com. Please see our [Security Policy](SECURITY.md) for details.
+Security issues should be reported privately to platformsolutions@horizonmedia.com. Please see our [Security Policy](SECURITY.md) for details.
 
 ## 📞 Support
 
 - 📋 **Issues**: [GitHub Issues](https://github.com/evan-schneider/cm360-audit-system/issues)
 - 💬 **Discussions**: [GitHub Discussions](https://github.com/evan-schneider/cm360-audit-system/discussions)  
-- 📧 **Contact**: evan.schneider98@gmail.com
+- 📧 **Contact**: platformsolutions@horizonmedia.com
 
 ---
 

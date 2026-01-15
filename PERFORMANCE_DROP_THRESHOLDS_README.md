@@ -66,6 +66,14 @@ Think of this as having a smart assistant who:
 
 **Why 3 days?** It's the sweet spot—long enough to avoid false alarms from single-day blips, but short enough to catch real issues quickly.
 
+**How the comparison builds day-by-day:**
+- **Day 1** (placement start date): System saves this day's data but doesn't compare anything yet—no history exists
+- **Day 2**: Compares Day 2 performance against Day 1 (using Day 1 as the baseline)
+- **Day 3**: Compares Day 3 against the average of Day 1 and Day 2 (2-day average)
+- **Day 4+**: Compares today against the rolling 3-day average (most recent 3 days)
+
+This means your alerts get smarter each day as the system learns what's "normal" for each placement!
+
 **Smart features you'll appreciate:**
 - **Grace periods**: Skips the first few days of a campaign so you don't get alerts during normal ramp-up
 - **Volume filters**: Ignores test placements and low-traffic items that naturally fluctuate
@@ -746,26 +754,14 @@ You can exclude by:
 **Q: Can I enable this for just one config?**  
 A: Yes! Each config has independent settings. Leave other configs with `Active = FALSE`.
 
-**Q: Will this slow down my daily audits?**  
-A: No. Both features add ~2-5 seconds per config. The system is optimized for performance.
-
-**Q: What if I delete cache files accidentally?**  
-A: The system will rebuild automatically. Backfill runs when <3 cache files exist.
-
 **Q: Can I change thresholds mid-campaign?**  
 A: Yes. Changes take effect on next audit run (usually next morning).
-
-**Q: Do I need to run backfill manually?**  
-A: No. Backfill runs automatically when you first enable performance drops and cache is insufficient.
 
 **Q: What happens if a placement is paused?**  
 A: Performance drops only check in-flight placements or placements that ended in the last 3 days.
 
 **Q: Can I get hourly alerts instead of daily?**  
 A: Not currently. The system is designed for daily batch processing aligned with CM360 data availability.
-
-**Q: Will this work with STAGING mode?**  
-A: Yes. When STAGING_MODE = 'Y', performance drop and launch emails route to ADMIN_EMAIL only.
 
 ---
 

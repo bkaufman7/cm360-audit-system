@@ -2019,7 +2019,7 @@ Use this format when documenting system changes:
 
 **Example:**
 `
-### 2025-10-29 - Evan Schneider
+### 2025-10-29 - Platform Solutions
 
 **Change:** Added Gmail email cleanup function (deleteOldAuditEmails)
 

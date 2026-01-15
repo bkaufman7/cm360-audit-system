@@ -12,7 +12,7 @@ We take the security of CM360 Audit System seriously. If you believe you have fo
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-Instead, please send a report to: **evan.schneider98@gmail.com**
+Instead, please send a report to: **platformsolutions@horizonmedia.com**
 
 You should receive a response within 48 hours. If for some reason you do not, please follow up to ensure we received your original message.
 

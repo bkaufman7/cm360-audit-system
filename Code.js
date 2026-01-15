@@ -78,7 +78,7 @@ const DEDICATED_BATCH_CONFIGS = (function () {
 		const raw = PropertiesService.getScriptProperties().getProperty('DEDICATED_BATCH_CONFIGS');
 		if (raw) return String(raw).split(',').map(s => String(s || '').trim()).filter(Boolean);
 	} catch (e) {}
-	return ['NEXTSD01']; // default isolation for long-running config(s)
+	return ['NEXTSD01', 'NEXTSD02']; // default isolation for long-running config(s)
 })();
 
 // === SHEET NAME CONSTANTS ===
@@ -2165,7 +2165,29 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
 	} else {
 	 // Validate this file's header strictly before appending rows
 	 const check = analyzeHeaderAgainstSpec_(localHeader);
-	 if ((check.missing && check.missing.length) || check.orderOk === false) {
+	 
+	 // Special handling for FLAGGED_ONLY files: accept old 11-column format during transition
+	 const isFlaggedOnly = fileName.toLowerCase().includes('flagged_only');
+	 let skipFile = false;
+	 
+	 if (isFlaggedOnly && check.missing && check.missing.length > 0) {
+		 // Check if it's the old 11-column format: Advertiser, Campaign, Site, Placement, Placement ID, Start, End, Creative, Impressions, Clicks, Flag(s)
+		 const oldFormatHeaders = ['Advertiser', 'Campaign', 'Site (CM360)', 'Placement', 'Placement ID', 'Placement Start Date', 'Placement End Date', 'Creative', 'Impressions', 'Clicks'];
+		 const canonLocal = localHeader.map(h => headerNormalize(h));
+		 const hasAllOldFormat = oldFormatHeaders.every(h => canonLocal.includes(headerNormalize(h)));
+		 
+		 if (hasAllOldFormat) {
+			 // Old format detected - needs column mapping to fill in missing columns
+			 Logger.log(`[${configName}] Detected old FLAGGED_ONLY format (11 columns) in ${fileName} - will map to new 14-column schema`);
+			 // Don't skip - we'll handle the mapping below
+		 } else {
+			 skipFile = true;
+		 }
+	 } else if ((check.missing && check.missing.length) || check.orderOk === false) {
+		 skipFile = true;
+	 }
+	 
+	 if (skipFile) {
 		 const diag = formatHeaderOrderDiagnostic_(localHeader);
 		 headerIssues.push({ fileName: file.getName(), missing: (check.missing || []).slice(), orderOk: !!check.orderOk, diag });
 		 Logger.log(`[${configName}] Skipping file due to schema/order mismatch: ${fileName} (missing: ${(check.missing||[]).join(', ') || 'none'}; orderOk=${check.orderOk})`);
@@ -2174,16 +2196,72 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
  const startRow = mergedSheet.getLastRow() + 1;
  const rowsToAdd = cleanedData.slice(1);
  if (rowsToAdd.length > 0 && header.length > 0) {
+	 // Map old FLAGGED_ONLY format to new schema if needed
+	 let mappedRows = rowsToAdd;
+	 if (isFlaggedOnly && check.missing && check.missing.length > 0) {
+		 Logger.log(`[${configName}] Mapping old FLAGGED_ONLY format to 14-column schema for ${fileName}`);
+		 // Build column mapping from old format to new
+		 const getIdx = (needle) => localHeader.findIndex(h => headerNormalize(h) === headerNormalize(needle));
+		 const advertiserIdx = getIdx('Advertiser');
+		 const campaignIdx = getIdx('Campaign');
+		 const siteIdx = getIdx('Site (CM360)');
+		 const placementIdIdx = getIdx('Placement ID');
+		 const placementIdx = getIdx('Placement');
+		 const startDateIdx = getIdx('Placement Start Date');
+		 const endDateIdx = getIdx('Placement End Date');
+		 const creativeIdx = getIdx('Creative');
+		 const impressionsIdx = getIdx('Impressions');
+		 const clicksIdx = getIdx('Clicks');
+		 
+		 // Map each row to the 14-column format (Ad Type, Placement Pixel Size, Creative Pixel Size, Date will be empty)
+		 mappedRows = rowsToAdd.map(row => {
+			 const mapped = new Array(header.length).fill('');
+			 // Map to header positions in merged sheet
+			 const targetAdvertiserIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Advertiser'));
+			 const targetCampaignIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Campaign'));
+			 const targetSiteIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Site (CM360)'));
+			 const targetPlacementIdIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement ID'));
+			 const targetPlacementIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement'));
+			 const targetStartDateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement Start Date'));
+			 const targetEndDateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement End Date'));
+			 const targetAdTypeIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Ad Type'));
+			 const targetCreativeIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Creative'));
+			 const targetPlacementPixelIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement Pixel Size'));
+			 const targetCreativePixelIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Creative Pixel Size'));
+			 const targetDateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Date'));
+			 const targetImpressionsIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Impressions'));
+			 const targetClicksIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Clicks'));
+			 
+			 if (targetAdvertiserIdx >= 0 && advertiserIdx >= 0) mapped[targetAdvertiserIdx] = row[advertiserIdx];
+			 if (targetCampaignIdx >= 0 && campaignIdx >= 0) mapped[targetCampaignIdx] = row[campaignIdx];
+			 if (targetSiteIdx >= 0 && siteIdx >= 0) mapped[targetSiteIdx] = row[siteIdx];
+			 if (targetPlacementIdIdx >= 0 && placementIdIdx >= 0) mapped[targetPlacementIdIdx] = row[placementIdIdx];
+			 if (targetPlacementIdx >= 0 && placementIdx >= 0) mapped[targetPlacementIdx] = row[placementIdx];
+			 if (targetStartDateIdx >= 0 && startDateIdx >= 0) mapped[targetStartDateIdx] = row[startDateIdx];
+			 if (targetEndDateIdx >= 0 && endDateIdx >= 0) mapped[targetEndDateIdx] = row[endDateIdx];
+			 if (targetAdTypeIdx >= 0) mapped[targetAdTypeIdx] = ''; // Empty for old format
+			 if (targetCreativeIdx >= 0 && creativeIdx >= 0) mapped[targetCreativeIdx] = row[creativeIdx];
+			 if (targetPlacementPixelIdx >= 0) mapped[targetPlacementPixelIdx] = ''; // Empty for old format
+			 if (targetCreativePixelIdx >= 0) mapped[targetCreativePixelIdx] = ''; // Empty for old format
+			 if (targetDateIdx >= 0) mapped[targetDateIdx] = ''; // Empty for old format
+			 if (targetImpressionsIdx >= 0 && impressionsIdx >= 0) mapped[targetImpressionsIdx] = row[impressionsIdx];
+			 if (targetClicksIdx >= 0 && clicksIdx >= 0) mapped[targetClicksIdx] = row[clicksIdx];
+			 
+			 return mapped;
+		 });
+	 }
+	 
 	 // Deduplicate rows using composite key: Placement ID + Placement Start Date + Placement End Date + Creative + Impressions + Clicks
 	 // This prevents duplicate rows when multiple report files contain the same data
-	 const placementIdIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Placement ID'));
-	 const startDateIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Placement Start Date'));
-	 const endDateIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Placement End Date'));
-	 const creativeIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Creative'));
-	 const impressionsIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Impressions'));
-	 const clicksIdx = localHeader.findIndex(h => headerNormalize(h) === headerNormalize('Clicks'));
+	 // Use merged sheet header positions for deduplication (in case we mapped from old format)
+	 const dedupPlacementIdIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement ID'));
+	 const dedupStartDateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement Start Date'));
+	 const dedupEndDateIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Placement End Date'));
+	 const dedupCreativeIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Creative'));
+	 const dedupImpressionsIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Impressions'));
+	 const dedupClicksIdx = header.findIndex(h => headerNormalize(h) === headerNormalize('Clicks'));
 	 
-	 const uniqueRows = rowsToAdd.filter(r => {
+	 const uniqueRows = mappedRows.filter(r => {
 		 // Build composite key for deduplication using Placement ID + Placement Start Date + Placement End Date + Impressions + Clicks
 		 // Normalize dates to remove time component (some dates have timestamps, some don't)
 		 const normalizeDate = (val) => {
@@ -2199,12 +2277,12 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
 		 };
 		 
 		 const key = [
-			 String(r[placementIdIdx] || ''),
-			 normalizeDate(r[startDateIdx]),
-			 normalizeDate(r[endDateIdx]),
-			 String(r[creativeIdx] || ''),
-			 String(r[impressionsIdx] || ''),
-			 String(r[clicksIdx] || '')
+			 String(r[dedupPlacementIdIdx] || ''),
+			 normalizeDate(r[dedupStartDateIdx]),
+			 normalizeDate(r[dedupEndDateIdx]),
+			 String(r[dedupCreativeIdx] || ''),
+			 String(r[dedupImpressionsIdx] || ''),
+			 String(r[dedupClicksIdx] || '')
 		 ].join('|');
 		 
 		 if (seenRows.has(key)) {
@@ -2777,11 +2855,15 @@ function executeAudit(config, preloaded) {
  row[fullCol.Advertiser],
  row[fullCol.Campaign],
  row[fullCol.Site],
- row[fullCol.Placement],
  row[fullCol.PlacementID],
+ row[fullCol.Placement],
  row[fullCol.Start],
  row[fullCol.End],
+ row[fullCol['Ad Type']],
  row[fullCol.Creative],
+ row[fullCol['Placement Pixel Size']],
+ row[fullCol['Creative Pixel Size']],
+ row[fullCol.Date],
  row[fullCol.Impressions],
  row[fullCol.Clicks],
  row[flagColIndex]
@@ -3171,6 +3253,102 @@ function getEmailQuotaRemaining_() {
  return val !== null ? Number(val) : null;
 }
 
+// Build aggregated flag summary for high-volume flag reports (100+ flags)
+function buildAggregatedFlagSummary_(flaggedRows, configName) {
+	// Group flags by flag type, then by site/campaign
+	const flagGroups = {};
+	
+	flaggedRows.forEach(row => {
+		// New 15-column structure: 0=Advertiser, 1=Campaign, 2=Site, 3=PlacementID, 4=Placement, 
+		// 5=Start, 6=End, 7=AdType, 8=Creative, 9=PlacementPixel, 10=CreativePixel, 11=Date, 
+		// 12=Impressions, 13=Clicks, 14=Flags
+		const site = String(row[2] || 'Unknown Site').trim();
+		const campaign = String(row[1] || 'Unknown Campaign').trim();
+		const flagsCell = String(row[14] || '').trim();
+		
+		// Parse individual flags (can be multiple per placement)
+		const flags = flagsCell.split(';').map(f => f.trim()).filter(Boolean);
+		
+		flags.forEach(flag => {
+			if (!flagGroups[flag]) {
+				flagGroups[flag] = {};
+			}
+			
+			const key = `${site} / ${campaign}`;
+			if (!flagGroups[flag][key]) {
+				flagGroups[flag][key] = { count: 0, site, campaign };
+			}
+			flagGroups[flag][key].count++;
+		});
+	});
+	
+	// Sort flag types by total count (descending)
+	const sortedFlagTypes = Object.keys(flagGroups).sort((a, b) => {
+		const countA = Object.values(flagGroups[a]).reduce((sum, g) => sum + g.count, 0);
+		const countB = Object.values(flagGroups[b]).reduce((sum, g) => sum + g.count, 0);
+		return countB - countA;
+	});
+	
+	// Build HTML summary with cleaner formatting
+	let html = `
+	<div style="font-family:Arial, sans-serif; margin-top:16px; margin-bottom:16px; padding:20px; background-color:#ffffff; border:2px solid #e3e8ef; border-radius:6px;">
+		<h3 style="margin-top:0; margin-bottom:8px; font-size:15px; color:#2c3e50; font-weight:600;">Flag Summary</h3>
+		<p style="margin:0 0 14px 0; font-size:11px; color:#6c757d; font-style:italic;">Each line shows: Site / Campaign: number of flagged placements</p>`;
+	
+	sortedFlagTypes.forEach((flagType, idx) => {
+		const groups = flagGroups[flagType];
+		const totalForFlag = Object.values(groups).reduce((sum, g) => sum + g.count, 0);
+		
+		// Sort groups by count (descending)
+		const sortedGroups = Object.entries(groups).sort((a, b) => b[1].count - a[1].count);
+		
+		// Take top 5 groups for this flag type
+		const topGroups = sortedGroups.slice(0, 5);
+		const hasMore = sortedGroups.length > 5;
+		
+		// Add separator between flag types
+		if (idx > 0) {
+			html += `<div style="border-top:1px solid #e3e8ef; margin:14px 0;"></div>`;
+		}
+		
+		html += `
+		<div style="margin-bottom:10px;">
+			<div style="font-weight:600; font-size:13px; color:#dc3545; margin-bottom:6px; background-color:#fff5f5; padding:6px 10px; border-left:3px solid #dc3545;">
+				${escapeHtml(flagType)} <span style="color:#6c757d; font-weight:normal;">(${totalForFlag} ${totalForFlag === 1 ? 'placement' : 'placements'})</span>
+			</div>`;
+		
+		topGroups.forEach(([key, data]) => {
+			html += `
+			<div style="margin-left:20px; margin-top:4px; font-size:12px; line-height:1.8; color:#495057;">
+				<span style="color:#28a745; margin-right:6px;">▸</span>${escapeHtml(key)}: <strong style="color:#2c3e50;">${data.count}</strong>
+			</div>`;
+		});
+		
+		if (hasMore) {
+			const remaining = sortedGroups.length - 5;
+			const remainingCount = sortedGroups.slice(5).reduce((sum, [, data]) => sum + data.count, 0);
+			html += `
+			<div style="margin-left:20px; margin-top:4px; font-size:11px; line-height:1.8; color:#6c757d; font-style:italic;">
+				<span style="color:#6c757d; margin-right:6px;">▸</span>... and ${remaining} more site/campaign ${remaining === 1 ? 'combination' : 'combinations'} (${remainingCount} placements)
+			</div>`;
+		}
+		
+		html += `</div>`;
+	});
+	
+	const totalUnique = new Set(flaggedRows.map(r => r[3])).size; // Unique placement IDs (now at index 3)
+	const totalCampaigns = new Set(flaggedRows.map(r => r[1])).size;
+	
+	html += `
+		<div style="border-top:2px solid #e3e8ef; margin-top:16px; padding-top:12px; font-size:13px; color:#2c3e50; background-color:#f8f9fa; padding:10px; border-radius:4px;">
+			<strong>Total:</strong> ${flaggedRows.length} flagged ${flaggedRows.length === 1 ? 'row' : 'rows'} &bull; ${totalUnique} unique ${totalUnique === 1 ? 'placement' : 'placements'} &bull; ${totalCampaigns} ${totalCampaigns === 1 ? 'campaign' : 'campaigns'}
+		</div>
+	</div>`;
+	
+	Logger.log(`[${configName}] Built aggregated summary for ${flaggedRows.length} flags (${sortedFlagTypes.length} flag types)`);
+	return html;
+}
+
 // === EMAIL FLAGGED ROWS & REPORTS ===
 function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsData, performanceDrops, launchDetections) {
  const configName = config.name;
@@ -3196,16 +3374,28 @@ function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsDat
 	// Build attachment depending on mode
 	let xlsxBlob;
 	if (attachmentMode === 'FLAGGED_ONLY') {
-		// Create a lightweight workbook with only flagged rows (same columns as emailRows)
+		// Create a lightweight workbook with only flagged rows (14-column schema + Flag(s))
 		const tmp = SpreadsheetApp.create(`CM360_Flagged_${configName}_${subjectDate}`);
 		const sh = tmp.getSheets()[0];
-		const header = ['Advertiser','Campaign','Site (CM360)','Placement','Placement ID','Placement Start Date','Placement End Date','Creative','Impressions','Clicks','Flag(s)'];
-		// Write header + rows
+		// 14 required columns in exact order + Flag(s) at the end
+		const header = ['Advertiser','Campaign','Site (CM360)','Placement ID','Placement','Placement Start Date','Placement End Date','Ad Type','Creative','Placement Pixel Size','Creative Pixel Size','Date','Impressions','Clicks','Flag(s)'];
+		// Write header + rows (emailRows now has 15 cols: 0-13 are data, 14 is flags)
 		const values = [header].concat(emailRows.map(r => [
-			r[0], r[1], r[2], r[3], r[4],
-			formatDate(new Date(r[5]), 'yyyy-MM-dd'),
-			formatDate(new Date(r[6]), 'yyyy-MM-dd'),
-			r[7], r[8], r[9], r[10]
+			r[0], // Advertiser
+			r[1], // Campaign
+			r[2], // Site
+			r[3], // Placement ID
+			r[4], // Placement
+			formatDate(new Date(r[5]), 'yyyy-MM-dd'), // Start Date
+			formatDate(new Date(r[6]), 'yyyy-MM-dd'), // End Date
+			r[7], // Ad Type
+			r[8], // Creative
+			r[9], // Placement Pixel Size
+			r[10], // Creative Pixel Size
+			r[11] ? formatDate(new Date(r[11]), 'yyyy-MM-dd') : '', // Date
+			r[12], // Impressions
+			r[13], // Clicks
+			r[14]  // Flag(s)
 		]));
 		sh.clear();
 		sh.getRange(1,1,values.length, header.length).setValues(values);
@@ -3225,28 +3415,73 @@ function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsDat
 	const verb = totalFlagged === 1 ? 'was' : 'were';
 	const summaryText = `The following ${totalFlagged} ${plural(totalFlagged, 'placement', 'placements')} across ${uniqueCampaigns} ${plural(uniqueCampaigns, 'campaign', 'campaigns')} ${verb} flagged during the <strong>${configName}</strong> CM360 audit of yesterday's delivery. Please review:`;
 
-	const rowHtmlFragments = emailRows.map((row, i) => `
+	// Check if we should use aggregated summary (100+ flags)
+	const useAggregatedSummary = totalFlagged >= 100;
+	
+	// Build aggregated summary if threshold exceeded
+	let aggregatedSummaryHtml = '';
+	if (useAggregatedSummary) {
+		aggregatedSummaryHtml = buildAggregatedFlagSummary_(flaggedRows, configName);
+	}
+
+	const rowHtmlFragments = useAggregatedSummary ? [] : emailRows.map((row, i) => `
 	<tr style="line-height:1.2; font-size:11px; background-color:${i % 2 === 0 ? '#ffffff' : '#f9f9f9'};">
 	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(row[0])}</td>
 	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(row[1])}</td>
 	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(row[2])}</td>
-	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncate(row[3], 60))}</td>
-	<td style="padding:2px 4px;">${escapeHtml(row[4])}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncate(row[4], 60))}</td>
+	<td style="padding:2px 4px;">${escapeHtml(row[3])}</td>
 	<td style="padding:2px 4px;">${formatDate(new Date(row[5]), 'yyyy-MM-dd')}</td>
 	<td style="padding:2px 4px;">${formatDate(new Date(row[6]), 'yyyy-MM-dd')}</td>
-	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncate(row[7], 45))}</td>
-	<td style="padding:2px 4px; text-align:right;">${row[8]}</td>
-	<td style="padding:2px 4px; text-align:right;">${row[9]}</td>
+	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncate(row[8], 45))}</td>
+	<td style="padding:2px 4px; text-align:right;">${row[12]}</td>
+	<td style="padding:2px 4px; text-align:right;">${row[13]}</td>
 	<td style="padding:2px 4px; white-space:normal; line-height:1.3; word-break:break-word;">
-${String(row[10] ?? '').split('; ').map(f => `<div>${escapeHtml(f)}</div>`).join('')}
+${String(row[14] ?? '').split('; ').map(f => `<div>${escapeHtml(f)}</div>`).join('')}
 	</td>
 	</tr>`);
 
 	const buildHtmlBody = (rowsToInclude, truncated) => {
-		const visibleRows = rowHtmlFragments.slice(0, rowsToInclude).join('');
-		const truncateNotice = truncated
-			? `<p style="font-family:Arial, sans-serif; font-size:12px; margin-top:12px;">Please view the attachment for additional flags.</p>`
-			: '';
+		// If using aggregated summary, show that instead of individual rows
+		let mainContent = '';
+		if (useAggregatedSummary) {
+			mainContent = `
+	<p style="font-family:Arial, sans-serif; font-size:13px; line-height:1.5; color:#2c3e50; margin-bottom:16px;">${summaryText}</p>
+	${aggregatedSummaryHtml}
+	<div style="font-family:Arial, sans-serif; font-size:12px; margin-top:20px; padding:14px 16px; background-color:#fff8e1; border-left:4px solid #ffc107; border-radius:4px;">
+		<strong style="color:#f57c00;">Full details:</strong> <span style="color:#424242;">Due to the high volume of flags, individual placement details are provided in the attached Excel file.</span>
+	</div>`;
+		} else {
+			// Original detailed table
+			const visibleRows = rowHtmlFragments.slice(0, rowsToInclude).join('');
+			const truncateNotice = truncated
+				? `<p style="font-family:Arial, sans-serif; font-size:12px; margin-top:12px;">Please view the attachment for additional flags.</p>`
+				: '';
+			
+			mainContent = `
+	<p style="font-family:Arial, sans-serif; font-size:13px; line-height:1.4;">${summaryText}</p>
+	<table border="1" cellpadding="2" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse;">
+	<thead style="background-color:#f2f2f2;">
+	<tr>
+	<th style="padding:2px; width:140px;">Advertiser</th>
+	<th style="padding:2px; width:180px;">Campaign</th>
+	<th style="padding:2px; width:100px;">Site</th>
+	<th style="padding:2px; width:180px;">Placement</th>
+	<th style="padding:2px; width:100px;">Placement ID</th>
+	<th style="padding:2px; width:90px;">Start Date</th>
+	<th style="padding:2px; width:90px;">End Date</th>
+	<th style="padding:2px; width:180px;">Creative</th>
+	<th style="padding:2px; width:60px;">Impr.</th>
+	<th style="padding:2px; width:60px;">Clicks</th>
+	<th style="padding:2px; width:160px;">Flag(s)</th>
+	</tr>
+	</thead>
+	<tbody>
+${visibleRows}
+	</tbody>
+	</table>
+${truncateNotice}`;
+		}
 
 		// Build performance drop section if there are any drops
 		let performanceDropSection = '';
@@ -3358,28 +3593,7 @@ ${launchRows}
 		}
 
 		return `
-	<p style="font-family:Arial, sans-serif; font-size:13px; line-height:1.4;">${summaryText}</p>
-	<table border="1" cellpadding="2" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse;">
-	<thead style="background-color:#f2f2f2;">
-	<tr>
-	<th style="padding:2px; width:140px;">Advertiser</th>
-	<th style="padding:2px; width:180px;">Campaign</th>
-	<th style="padding:2px; width:100px;">Site</th>
-	<th style="padding:2px; width:180px;">Placement</th>
-	<th style="padding:2px; width:100px;">Placement ID</th>
-	<th style="padding:2px; width:90px;">Start Date</th>
-	<th style="padding:2px; width:90px;">End Date</th>
-	<th style="padding:2px; width:180px;">Creative</th>
-	<th style="padding:2px; width:60px;">Impr.</th>
-	<th style="padding:2px; width:60px;">Clicks</th>
-	<th style="padding:2px; width:160px;">Flag(s)</th>
-	</tr>
-	</thead>
-	<tbody>
-${visibleRows}
-	</tbody>
-	</table>
-${truncateNotice}
+${mainContent}
 ${performanceDropSection}
 ${launchSection}
 	<p style="margin-top:12px; font-family:Arial, sans-serif; font-size:12px;">&mdash; Platform Solutions Team</p>
@@ -9451,6 +9665,7 @@ function syncFromExternalConfig(options) {
  const allSheets = [
  { name: RECIPIENTS_SHEET_NAME, description: 'Recipients' },
  { name: THRESHOLDS_SHEET_NAME, description: 'Thresholds' },
+ { name: PERFORMANCE_DROP_THRESHOLDS_SHEET_NAME, description: 'Performance Drop Thresholds' },
  { name: EXCLUSIONS_SHEET_NAME, description: 'Exclusions' },
  { name: 'Audit Requests', description: 'Audit Requests' }
  ];
