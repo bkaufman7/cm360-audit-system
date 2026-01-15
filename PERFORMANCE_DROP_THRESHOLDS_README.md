@@ -1,5 +1,50 @@
 # Performance Drop Thresholds & Launch Detection Setup Guide
 
+## Table of Contents
+
+1. [Welcome to Advanced Campaign Monitoring](#welcome-to-advanced-campaign-monitoring-)
+   - [What You'll Be Able to Do](#what-youll-be-able-to-do)
+2. [Important: How Configuration Works](#important-how-configuration-works-)
+   - [The Two-Spreadsheet System](#the-two-spreadsheet-system)
+   - [Why This Matters for You](#why-this-matters-for-you)
+3. [How Does This Work Behind the Scenes?](#how-does-this-work-behind-the-scenes)
+   - [Performance Drop Detection: Your Campaign's Watchdog](#performance-drop-detection-your-campaigns-watchdog)
+   - [Launch Detection: Your New Campaign Spotter](#launch-detection-your-new-campaign-spotter)
+4. [Your Configuration Sheet: The Control Center](#your-configuration-sheet-the-control-center)
+5. [Let's Set This Up (Follow Along!)](#lets-set-this-up-follow-along)
+   - [Step 1: Find Your Configuration Sheet](#step-1-find-your-configuration-sheet-)
+   - [Step 2: Add Your Config Name](#step-2-add-your-config-name-)
+   - [Step 3: Set Up Performance Drop Detection](#step-3-set-up-performance-drop-detection-)
+   - [Step 4: Set Up Launch Detection](#step-4-set-up-launch-detection-)
+   - [Step 5: Activate It!](#step-5-activate-it-)
+   - [Step 6: Test It](#step-6-test-it-)
+   - [Step 7: Wait for Your First Email](#step-7-wait-for-your-first-email-)
+6. [Real-World Setup Examples (Copy These!)](#real-world-setup-examples-copy-these)
+   - [Example 1: "I Manage Large, Stable Campaigns"](#example-1-i-manage-large-stable-campaigns)
+   - [Example 2: "I Need to Catch Issues Fast"](#example-2-i-need-to-catch-issues-fast)
+   - [Example 3: "I Just Want Launch Notifications"](#example-3-i-just-want-launch-notifications)
+7. [What Your Emails Will Look Like](#what-your-emails-will-look-like)
+   - [When Performance Drops Are Detected](#when-performance-drops-are-detected)
+   - [When New Launches Are Detected](#when-new-launches-are-detected)
+   - [Where These Sections Appear](#where-these-sections-appear)
+8. [Common Questions & Quick Fixes](#common-questions--quick-fixes)
+   - ["I set it up but don't see any drops"](#i-set-it-up-but-dont-see-any-drops-)
+   - ["Launch detection isn't showing anything"](#launch-detection-isnt-showing-anything-)
+   - ["Getting too many alerts"](#getting-too-many-alerts-)
+   - ["System seems slow / not working"](#system-seems-slow--not-working-)
+9. [Pro Tips from the Ad Ops Team](#pro-tips-from-the-ad-ops-team)
+10. [System Architecture (For Reference)](#system-architecture-for-reference)
+    - [How Configuration Flows Through the System](#how-configuration-flows-through-the-system)
+    - [Where Data Lives](#where-data-lives)
+    - [Sync Frequency](#sync-frequency)
+    - [Cache File Structure](#cache-file-structure)
+    - [Rolling Average Calculation](#rolling-average-calculation)
+    - [Exclusions Integration](#exclusions-integration)
+11. [FAQ](#faq)
+12. [TL;DR (Quick Start)](#tldr-quick-start)
+
+---
+
 ## Welcome to Advanced Campaign Monitoring! 👋
 
 This guide will help you set up two powerful monitoring features that work alongside your existing CM360 Daily Audits:
