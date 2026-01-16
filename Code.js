@@ -3353,6 +3353,85 @@ function cleanupOldCheckpoints_() {
 	}
 }
 
+/**
+ * Rerun all configs that failed today (max retries exceeded or errors)
+ * This is a manual recovery tool accessible from Admin Controls menu
+ */
+function rerunFailedConfigs() {
+	const ui = SpreadsheetApp.getUi();
+	
+	try {
+		// Get today's results
+		const results = getCombinedAuditResults_();
+		if (!results || results.length === 0) {
+			ui.alert('No Results Found', 'No audit results found for today. Run at least one audit first.', ui.ButtonSet.OK);
+			return;
+		}
+		
+		// Find failed configs
+		const failedConfigs = results.filter(r => {
+			const status = String(r.status || '').toLowerCase();
+			return r.failed || 
+				   status.includes('failed') || 
+				   status.includes('error') ||
+				   status.includes('max timeout retries');
+		});
+		
+		if (failedConfigs.length === 0) {
+			ui.alert('No Failures', 'No failed configs found in today\'s results. All configs completed successfully!', ui.ButtonSet.OK);
+			return;
+		}
+		
+		// Build list for confirmation
+		const configNames = failedConfigs.map(c => c.name).join('\n• ');
+		const response = ui.alert(
+			'Rerun Failed Configs',
+			`Found ${failedConfigs.length} failed config(s):\n\n• ${configNames}\n\nDo you want to rerun these now?`,
+			ui.ButtonSet.YES_NO
+		);
+		
+		if (response !== ui.Button.YES) {
+			Logger.log('Rerun cancelled by user');
+			return;
+		}
+		
+		// Get full config objects for the failed ones
+		const allConfigs = getAuditConfigs();
+		const configsToRun = allConfigs.filter(c => 
+			failedConfigs.some(fc => fc.name === c.name)
+		);
+		
+		if (configsToRun.length === 0) {
+			ui.alert('Config Mismatch', 'Could not find matching configs in Recipients sheet. They may have been removed.', ui.ButtonSet.OK);
+			return;
+		}
+		
+		// Clear their checkpoint data so they start fresh
+		const checkpoints = getAllCheckpoints_();
+		checkpoints.forEach(cp => {
+			if (cp.remaining && cp.remaining.some(name => failedConfigs.some(fc => fc.name === name))) {
+				clearCheckpoint_(cp.batchId);
+				Logger.log(`[RERUN] Cleared checkpoint for ${cp.batchId}`);
+			}
+		});
+		
+		Logger.log(`[RERUN] Starting manual rerun of ${configsToRun.length} failed configs: ${configsToRun.map(c => c.name).join(', ')}`);
+		
+		// Run them in a single batch
+		runAuditBatch(configsToRun, false);
+		
+		ui.alert(
+			'Rerun Complete',
+			`Finished rerunning ${configsToRun.length} failed config(s). Check your email for results.`,
+			ui.ButtonSet.OK
+		);
+		
+	} catch (e) {
+		Logger.log(`[RERUN] Error: ${e.message}`);
+		ui.alert('Error', `Failed to rerun configs: ${e.message}`, ui.ButtonSet.OK);
+	}
+}
+
 function storeCombinedAuditResults_(newResults) {
 	const cache = CacheService.getScriptCache();
 	const key = getAuditCacheKey_();
@@ -4528,6 +4607,7 @@ function createAuditMenu(ui) {
  // Manual Run Options
  .addItem('🧪  [TEST] Run Batch or Config', 'showBatchTestPicker')
  .addItem('▶️  Run Audit for...', 'showConfigPicker')
+ .addItem('🔄  Rerun Failed Configs', 'rerunFailedConfigs')
  .addSeparator()
  // Access Tools (no sidebar)
  .addItem('📦  Batch Assignments', 'showBatchAssignmentsModal')
@@ -4566,7 +4646,8 @@ function getAdminControlsHelpItems() {
 		{ label: '🧪  Test Thresholds…', fn: 'showThresholdTestPicker', desc: 'Run a full audit for selected config with detailed threshold logging to diagnose threshold filtering.' },
 		{ label: '🧪  [TEST] Run Batch or Config', fn: 'showBatchTestPicker', desc: 'Pick a batch or specific config to run on demand for testing.' },
 		{ label: '▶️  Run Audit for...', fn: 'showConfigPicker', desc: 'Pick any single config to run a one-off audit now.' },
-		{ label: '📦  Batch Assignments', fn: 'showBatchAssignmentsModal', desc: 'Displays which configs are assigned to each batch runner function.' },
+		{ label: '�  Rerun Failed Configs', fn: 'rerunFailedConfigs', desc: 'Automatically finds and reruns all configs that failed today (errors or max retries exceeded). Clears checkpoints for fresh start.' },
+		{ label: '�📦  Batch Assignments', fn: 'showBatchAssignmentsModal', desc: 'Displays which configs are assigned to each batch runner function.' },
 		{ label: '⏰  Install Health Check Trigger', fn: 'installHealthCheckTrigger', desc: 'Installs a daily trigger (early morning) to email the health report to admin.' },
 		{ label: '🛡️  Install Audit Watchdog Trigger', fn: 'installAuditWatchdogTrigger', desc: 'Installs a 3-hour watchdog trigger to detect and alert on timed-out batches.' }
 	];
