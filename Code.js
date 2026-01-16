@@ -2957,6 +2957,14 @@ function runAuditBatch(configs, isFinal = false) {
  Logger.log(` Audit Batch Started: ${new Date().toLocaleString()} (${batchId})`);
  const results = [];
 
+ // Set execution lock to prevent concurrent resume attempts
+ try {
+	 const props = PropertiesService.getScriptProperties();
+	 const lockKey = `BATCH_LOCK_${stableBatchId}`;
+	 props.setProperty(lockKey, JSON.stringify({ startedAt: Date.now(), batchId: batchId }));
+	 Logger.log(`[LOCK] Set execution lock for ${stableBatchId}`);
+ } catch (e) { Logger.log(`[LOCK] Failed to set lock: ${e.message}`); }
+
  // Record start state for watchdog
  try {
 	 const props = PropertiesService.getScriptProperties();
@@ -3032,12 +3040,15 @@ function runAuditBatch(configs, isFinal = false) {
  try {
 	 const props = PropertiesService.getScriptProperties();
 	 const key = AUDIT_RUN_STATE_KEY_PREFIX + batchId;
+	 Logger.log(`[INCREMENTAL] Saving ${results.length} results to ${key}`);
 	 const raw = props.getProperty(key);
 	 const state = raw ? JSON.parse(raw) : {};
 	 state.results = results.map(r => ({ name: r.name, status: r.status }));
 	 state.lastUpdated = Date.now();
-	 props.setProperty(key, JSON.stringify(state));
- } catch (e) { Logger.log('Failed to save incremental progress: ' + e.message); }
+	 const stateStr = JSON.stringify(state);
+	 props.setProperty(key, stateStr);
+	 Logger.log(`[INCREMENTAL] Saved ${state.results.length} results (${stateStr.length} bytes)`);
+ } catch (e) { Logger.log('[INCREMENTAL] Failed to save: ' + e.message); }
  
  } catch (err) {
  const entry = {
@@ -3056,12 +3067,15 @@ function runAuditBatch(configs, isFinal = false) {
  try {
 	 const props = PropertiesService.getScriptProperties();
 	 const key = AUDIT_RUN_STATE_KEY_PREFIX + batchId;
+	 Logger.log(`[INCREMENTAL-ERROR] Saving ${results.length} results (with error) to ${key}`);
 	 const raw = props.getProperty(key);
 	 const state = raw ? JSON.parse(raw) : {};
 	 state.results = results.map(r => ({ name: r.name, status: r.status }));
 	 state.lastUpdated = Date.now();
-	 props.setProperty(key, JSON.stringify(state));
- } catch (e) { Logger.log('Failed to save error progress: ' + e.message); }
+	 const stateStr = JSON.stringify(state);
+	 props.setProperty(key, stateStr);
+	 Logger.log(`[INCREMENTAL-ERROR] Saved ${state.results.length} results (${stateStr.length} bytes)`);
+ } catch (e) { Logger.log('[INCREMENTAL-ERROR] Failed to save: ' + e.message); }
  }
  }
 
@@ -3094,6 +3108,11 @@ function runAuditBatch(configs, isFinal = false) {
 	 state.results = results.map(r => ({ name: r.name, status: r.status }));
 	 state.timedOut = timedOut;
 	 props.setProperty(key, JSON.stringify(state));
+	 
+	 // Clear execution lock
+	 const lockKey = `BATCH_LOCK_${stableBatchId}`;
+	 props.deleteProperty(lockKey);
+	 Logger.log(`[LOCK] Cleared execution lock for ${stableBatchId}`);
  } catch (e) { Logger.log('runAuditBatch: failed to mark completion: ' + e.message); }
 }
 
@@ -3377,6 +3396,94 @@ function cleanupOldCheckpoints_() {
 }
 
 /**
+ * Resume any timed-out batches that have checkpoints
+ * Runs periodically during morning audit hours to automatically retry failed batches
+ * Includes safeguards to prevent conflicts with running batches
+ */
+function resumeTimedOutBatches() {
+	try {
+		// Time window check: only run during morning audit hours (8:00-9:30 AM)
+		const now = new Date();
+		const hour = now.getHours();
+		const minute = now.getMinutes();
+		const timeValue = hour * 60 + minute; // minutes since midnight
+		
+		// 8:00 AM = 480, 9:30 AM = 570
+		if (timeValue < 480 || timeValue > 570) {
+			Logger.log('[RESUME] Outside audit window (8:00-9:30 AM), skipping');
+			return;
+		}
+		
+		Logger.log('[RESUME] Checking for timed-out batches to resume...');
+		
+		const checkpoints = getAllCheckpoints_();
+		if (checkpoints.length === 0) {
+			Logger.log('[RESUME] No checkpoints found');
+			return;
+		}
+		
+		Logger.log(`[RESUME] Found ${checkpoints.length} checkpoint(s)`);
+		
+		const props = PropertiesService.getScriptProperties();
+		const currentTime = Date.now();
+		const LOCK_TIMEOUT_MS = 7 * 60 * 1000; // 7 minutes
+		const CHECKPOINT_AGE_LIMIT_MS = 30 * 60 * 1000; // 30 minutes
+		
+		for (const cp of checkpoints) {
+			// Age check: skip if checkpoint is too old (stale)
+			const age = currentTime - cp.lastAttempt;
+			if (age > CHECKPOINT_AGE_LIMIT_MS) {
+				Logger.log(`[RESUME] Skipping stale checkpoint ${cp.batchId} (${Math.round(age / 60000)} minutes old)`);
+				continue;
+			}
+			
+			// Lock check: skip if batch is currently running
+			const lockKey = `BATCH_LOCK_${cp.batchId}`;
+			const lockRaw = props.getProperty(lockKey);
+			if (lockRaw) {
+				try {
+					const lock = JSON.parse(lockRaw);
+					const lockAge = currentTime - lock.startedAt;
+					if (lockAge < LOCK_TIMEOUT_MS) {
+						Logger.log(`[RESUME] Skipping ${cp.batchId} - batch is currently running (lock age: ${Math.round(lockAge / 1000)}s)`);
+						continue;
+					} else {
+						Logger.log(`[RESUME] Lock expired for ${cp.batchId} (${Math.round(lockAge / 60000)} min old), clearing stale lock`);
+						props.deleteProperty(lockKey);
+					}
+				} catch (e) {
+					Logger.log(`[RESUME] Error parsing lock for ${cp.batchId}: ${e.message}`);
+				}
+			}
+			
+			// Get config objects for remaining configs
+			const allConfigs = getAuditConfigs();
+			const configsToResume = allConfigs.filter(c => cp.remaining.includes(c.name));
+			
+			if (configsToResume.length === 0) {
+				Logger.log(`[RESUME] No configs found for checkpoint ${cp.batchId}, clearing checkpoint`);
+				clearCheckpoint_(cp.batchId);
+				continue;
+			}
+			
+			Logger.log(`[RESUME] Resuming batch ${cp.batchId} with ${configsToResume.length} config(s): ${cp.remaining.join(', ')}`);
+			
+			// Resume the batch
+			runAuditBatch(configsToResume, false);
+			
+			// Only resume one batch per invocation to avoid conflicts
+			Logger.log('[RESUME] Resumed one batch, will check for more on next trigger');
+			return;
+		}
+		
+		Logger.log('[RESUME] No batches needed resuming');
+		
+	} catch (e) {
+		Logger.log(`[RESUME] Error: ${e.message}`);
+	}
+}
+
+/**
  * Rerun all configs that failed today (max retries exceeded or errors)
  * This is a manual recovery tool accessible from Admin Controls menu
  */
@@ -3460,7 +3567,7 @@ function rerunFailedConfigs() {
 		// Find failed configs - include incomplete, not started, in progress, errors, and explicit failures
 		const failedFromResults = results.filter(r => {
 			const status = String(r.status || '').toLowerCase();
-			return r.failed || 
+			const isFailed = r.failed || 
 				   status.includes('failed') || 
 				   status.includes('error') ||
 				   status.includes('max timeout retries') ||
@@ -3468,6 +3575,11 @@ function rerunFailedConfigs() {
 				   status.includes('in progress') ||
 				   status.includes('no run recorded') ||
 				   status.includes('no completion logged');
+			
+			if (isFailed) {
+				Logger.log(`[RERUN] ${r.name} marked as failed: status="${r.status}", failed=${r.failed}`);
+			}
+			return isFailed;
 		});
 		
 		// Combine: configs that ran but failed + configs that never ran
@@ -4225,6 +4337,25 @@ function installAllAutomationTriggers(options) {
 				results.push(`⚠️ Skipped trigger for ${fnName} — function not found in source`);
 			}
 		}
+	}
+
+	// === Resume timed-out batches (runs every 15 minutes during audit window) ===
+	if (shouldInclude('resumeTimedOutBatches', ['resumeTimedOutBatches'])) {
+		removeHandlers(['resumeTimedOutBatches'], 'resume checkpoint trigger');
+		// Run at 8:10, 8:25, 8:40, 8:55, 9:10, 9:25 AM
+		const resumeTimes = [
+			{ hour: 8, minute: 10 },
+			{ hour: 8, minute: 25 },
+			{ hour: 8, minute: 40 },
+			{ hour: 8, minute: 55 },
+			{ hour: 9, minute: 10 },
+			{ hour: 9, minute: 25 }
+		];
+		resumeTimes.forEach(time => {
+			createTrigger('resumeTimedOutBatches', 
+				trig => trig.timeBased().atHour(time.hour).nearMinute(time.minute).everyDays(1).create(), 
+				`resume timed-out batches trigger (${time.hour}:${String(time.minute).padStart(2, '0')} AM)`);
+		});
 	}
 
 	// === Summary failover ===
