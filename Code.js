@@ -3411,8 +3411,22 @@ function rerunFailedConfigs() {
 			return;
 		}
 		
+		Logger.log(`[RERUN] Analyzing ${results.length} config results`);
+		
+		// Get all active configs from Recipients to compare
+		const allActiveConfigs = getAuditConfigs();
+		const completedNames = new Set(results.map(r => r.name).filter(Boolean));
+		
+		// Find configs that didn't run at all
+		const notRunConfigs = allActiveConfigs
+			.map(c => c.name)
+			.filter(name => !completedNames.has(name))
+			.map(name => ({ name, status: 'Not started (no run recorded today)' }));
+		
+		Logger.log(`[RERUN] Found ${notRunConfigs.length} configs that didn't run: ${notRunConfigs.map(c => c.name).join(', ')}`);
+		
 		// Find failed configs - include incomplete, not started, in progress, errors, and explicit failures
-		const failedConfigs = results.filter(r => {
+		const failedFromResults = results.filter(r => {
 			const status = String(r.status || '').toLowerCase();
 			return r.failed || 
 				   status.includes('failed') || 
@@ -3423,6 +3437,11 @@ function rerunFailedConfigs() {
 				   status.includes('no run recorded') ||
 				   status.includes('no completion logged');
 		});
+		
+		// Combine: configs that ran but failed + configs that never ran
+		const failedConfigs = [...failedFromResults, ...notRunConfigs];
+		
+		Logger.log(`[RERUN] Total failed configs: ${failedConfigs.length} (${failedFromResults.length} from results + ${notRunConfigs.length} not run)`);
 		
 		if (failedConfigs.length === 0) {
 			ui.alert('No Failures', 'No failed configs found in today\'s results. All configs completed successfully!', ui.ButtonSet.OK);
