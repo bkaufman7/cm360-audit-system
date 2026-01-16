@@ -78,7 +78,7 @@ const DEDICATED_BATCH_CONFIGS = (function () {
 		const raw = PropertiesService.getScriptProperties().getProperty('DEDICATED_BATCH_CONFIGS');
 		if (raw) return String(raw).split(',').map(s => String(s || '').trim()).filter(Boolean);
 	} catch (e) {}
-	return ['NEXTSD01', 'NEXTSD02']; // default isolation for long-running config(s)
+	return ['NEXTSD01', 'NEXTSD02', 'DHC01', 'ENT01', 'GMNR01']; // default isolation for long-running config(s)
 })();
 
 // === SHEET NAME CONSTANTS ===
@@ -1180,7 +1180,8 @@ function buildSummaryEmailContent_(results, options) {
 	});
 
 		const rowsHtml = sorted.map(r => {
-		const isAlert = /skipped|error/i.test(String(r.status || ''));
+		const isFailed = r.failed || /failed.*max.*timeout.*retries/i.test(String(r.status || ''));
+		const isAlert = isFailed || /skipped|error/i.test(String(r.status || ''));
 		const bgColor = isAlert ? 'background-color:#ffe5e5;' : '';
 
 		// Email status with withhold indicator (emojis are OK in Outlook)
@@ -1193,6 +1194,10 @@ function buildSummaryEmailContent_(results, options) {
 			const mErr = statusText.match(/Error(?: during audit)?:\s*(.+)$/i);
 			if (mErr && mErr[1]) {
 				statusHtml += `<div style="color:#b00020; font-size:11px; margin-top:2px;">${escapeHtml(mErr[1])}</div>`;
+			}
+			// Highlight failed configs due to timeout retries
+			if (isFailed) {
+				statusHtml = `<span style="color:#b00020; font-weight:bold;">${statusHtml}</span>`;
 			}
 
 			// Delta calculation
@@ -2902,19 +2907,66 @@ function runDailyAuditByName(configName) {
 
 function runAuditBatch(configs, isFinal = false) {
  validateAuditConfigs();
- const batchId = (function(){
-	 try {
-		 const names = (configs || []).map(c => c && c.name).filter(Boolean).join(',');
-		 return `batch:${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss')}:${names}`;
-	 } catch (_) { return `batch:${Date.now()}`; }
- })();
+ 
+ // Generate stable batch ID based on config names (so resume uses same ID)
+ const configNames = (configs || []).map(c => c && c.name).filter(Boolean).sort();
+ const stableBatchId = `batch:${configNames.join(',')}`;
+ 
+ // Check for existing checkpoint (resume scenario)
+ const checkpoint = loadCheckpoint_(stableBatchId);
+ let attemptCount = 1;
+ let configsToRun = configs || [];
+ let previousResults = [];
+ 
+ if (checkpoint) {
+	 attemptCount = (checkpoint.attemptCount || 0) + 1;
+	 Logger.log(`[CHECKPOINT] Resuming batch, attempt ${attemptCount}/3`);
+	 
+	 // Check if we've exceeded retry limit
+	 if (attemptCount > 3) {
+		 Logger.log(`[CHECKPOINT] Max attempts (3) exceeded. Marking remaining configs as failed.`);
+		 const failedResults = checkpoint.remaining.map(name => ({
+			 name: name,
+			 status: 'Failed: Max timeout retries exceeded (3 attempts)',
+			 flaggedRows: null,
+			 emailSent: false,
+			 emailTime: formatDate(new Date(), 'yyyy-MM-dd HH:mm:ss'),
+			 emailWithheld: false,
+			 latestReportUrl: '',
+			 failed: true
+		 }));
+		 storeCombinedAuditResults_(failedResults);
+		 clearCheckpoint_(stableBatchId);
+		 
+		 // Check if all configs done and send summary
+		 const cachedResults = getCombinedAuditResults_();
+		 const totalConfigs = getAuditConfigs().length;
+		 if (cachedResults.length >= totalConfigs) {
+			 attemptSendDailySummary_({ allowPlaceholders: false, reason: 'All configs complete (with failures)' });
+		 }
+		 return;
+	 }
+	 
+	 // Resume: only run configs that didn't complete
+	 const remainingSet = new Set(checkpoint.remaining);
+	 configsToRun = configs.filter(c => remainingSet.has(c.name));
+	 Logger.log(`[CHECKPOINT] ${checkpoint.completed.length} already done, running ${configsToRun.length} remaining: ${checkpoint.remaining.join(', ')}`);
+ }
+ 
+ const batchId = `${stableBatchId}:${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss')}`;
  Logger.log(` Audit Batch Started: ${new Date().toLocaleString()} (${batchId})`);
  const results = [];
 
  // Record start state for watchdog
  try {
 	 const props = PropertiesService.getScriptProperties();
-	 const state = { startedAt: Date.now(), tz: Session.getScriptTimeZone(), configs: (configs||[]).map(c=>c&&c.name).filter(Boolean), isFinal: !!isFinal };
+	 const state = { 
+		 startedAt: Date.now(), 
+		 tz: Session.getScriptTimeZone(), 
+		 configs: configsToRun.map(c=>c&&c.name).filter(Boolean), 
+		 isFinal: !!isFinal,
+		 attemptCount: attemptCount
+	 };
 	 props.setProperty(AUDIT_RUN_STATE_KEY_PREFIX + batchId, JSON.stringify(state));
 	 const listRaw = props.getProperty(AUDIT_RUN_LIST_KEY);
 	 const list = listRaw ? JSON.parse(listRaw) : [];
@@ -2942,17 +2994,25 @@ function runAuditBatch(configs, isFinal = false) {
 	 preloaded = null;
  }
 
- for (const config of configs) {
+ let timedOut = false;
+ for (const config of configsToRun) {
  try {
  // Check soft guard before each config
  if ((Date.now() - startWall) > SOFT_GUARD_MS) {
-	 const msg = `Exiting early to avoid hard timeout. Batch ${batchId} processed ${results.length} of ${configs.length} configs.`;
-	 Logger.log('[TIMEGUARD] ' + msg);
-	 try {
-		 const subject = `[ALERT] CM360 Audit early exit before timeout`;
-		 const html = `<p>${escapeHtml(msg)}</p>`;
-		 safeSendEmail({ to: ADMIN_EMAIL, subject, htmlBody: html, plainBody: msg }, 'Timeout Guard');
-	 } catch (e) { Logger.log('Failed to notify admin about early-exit: ' + e.message); }
+	 timedOut = true;
+	 const completedNames = results.map(r => r.name);
+	 const remainingConfigs = configsToRun.slice(results.length).map(c => c.name);
+	 
+	 Logger.log(`[TIMEGUARD] Timeout approaching. Completed ${results.length}/${configsToRun.length} configs in this attempt.`);
+	 
+	 // Save checkpoint for resume
+	 const allCompleted = checkpoint ? [...checkpoint.completed, ...completedNames] : completedNames;
+	 saveCheckpoint_(stableBatchId, allCompleted, remainingConfigs, attemptCount);
+	 
+	 const msg = `Batch timeout at attempt ${attemptCount}/3. Completed ${results.length} configs, ${remainingConfigs.length} remaining: ${remainingConfigs.join(', ')}`;
+	 Logger.log(`[CHECKPOINT] ${msg}`);
+	 
+	 // Don't send alert email yet - wait for final results
 	 break;
  }
  const result = executeAudit(config, preloaded);
@@ -2990,6 +3050,12 @@ function runAuditBatch(configs, isFinal = false) {
 
 	Logger.log(`✅ Completed ${completedConfigs} of ${totalConfigs} configs`);
 
+	// If we completed all configs in this batch without timeout, clear checkpoint
+	if (!timedOut && results.length === configsToRun.length) {
+		clearCheckpoint_(stableBatchId);
+		Logger.log(`[CHECKPOINT] Batch completed successfully, checkpoint cleared`);
+	}
+
 	// Send the summary once when all configs are done, regardless of batch order
 	if (completedConfigs >= totalConfigs) {
 		attemptSendDailySummary_({ allowPlaceholders: false, reason: 'All configs complete' });
@@ -3003,6 +3069,7 @@ function runAuditBatch(configs, isFinal = false) {
 	 const state = raw ? JSON.parse(raw) : {};
 	 state.completedAt = Date.now();
 	 state.results = results.map(r => ({ name: r.name, status: r.status }));
+	 state.timedOut = timedOut;
 	 props.setProperty(key, JSON.stringify(state));
  } catch (e) { Logger.log('runAuditBatch: failed to mark completion: ' + e.message); }
 }
@@ -3157,6 +3224,133 @@ function sanitizeCombinedResultEntry_(entry, options) {
 		sanitized.latestReportUrl = sanitizeString(entry.latestReportUrl, urlLimit);
 	}
 	return sanitized;
+}
+
+// === CHECKPOINT / RESUME SYSTEM ===
+// Handles timeout recovery by saving batch progress and resuming incomplete configs
+
+/**
+ * Save a checkpoint for a batch that's timing out
+ * @param {string} batchId - Unique batch identifier
+ * @param {Array<string>} completedConfigs - Config names that finished successfully
+ * @param {Array<string>} remainingConfigs - Config names still pending
+ * @param {number} attemptCount - Current retry attempt (1-3)
+ */
+function saveCheckpoint_(batchId, completedConfigs, remainingConfigs, attemptCount) {
+	try {
+		const checkpoint = {
+			batchId: batchId,
+			completed: completedConfigs || [],
+			remaining: remainingConfigs || [],
+			attemptCount: attemptCount || 1,
+			lastAttempt: Date.now(),
+			timestamp: new Date().toISOString()
+		};
+		
+		const props = PropertiesService.getScriptProperties();
+		const key = `CHECKPOINT_${batchId}`;
+		props.setProperty(key, JSON.stringify(checkpoint));
+		Logger.log(`[CHECKPOINT] Saved: ${remainingConfigs.length} configs remaining, attempt ${attemptCount}`);
+		return true;
+	} catch (e) {
+		Logger.log(`[CHECKPOINT] Failed to save: ${e.message}`);
+		return false;
+	}
+}
+
+/**
+ * Load checkpoint for a batch if it exists
+ * @param {string} batchId - Unique batch identifier
+ * @returns {Object|null} Checkpoint data or null if not found
+ */
+function loadCheckpoint_(batchId) {
+	try {
+		const props = PropertiesService.getScriptProperties();
+		const key = `CHECKPOINT_${batchId}`;
+		const raw = props.getProperty(key);
+		if (!raw) return null;
+		
+		const checkpoint = JSON.parse(raw);
+		Logger.log(`[CHECKPOINT] Loaded: ${checkpoint.remaining.length} configs remaining, attempt ${checkpoint.attemptCount}`);
+		return checkpoint;
+	} catch (e) {
+		Logger.log(`[CHECKPOINT] Failed to load: ${e.message}`);
+		return null;
+	}
+}
+
+/**
+ * Clear checkpoint after successful batch completion
+ * @param {string} batchId - Unique batch identifier
+ */
+function clearCheckpoint_(batchId) {
+	try {
+		const props = PropertiesService.getScriptProperties();
+		const key = `CHECKPOINT_${batchId}`;
+		props.deleteProperty(key);
+		Logger.log(`[CHECKPOINT] Cleared checkpoint for ${batchId}`);
+		return true;
+	} catch (e) {
+		Logger.log(`[CHECKPOINT] Failed to clear: ${e.message}`);
+		return false;
+	}
+}
+
+/**
+ * Get all active checkpoints (for monitoring/cleanup)
+ * @returns {Array<Object>} Array of checkpoint objects
+ */
+function getAllCheckpoints_() {
+	try {
+		const props = PropertiesService.getScriptProperties();
+		const all = props.getProperties();
+		const checkpoints = [];
+		
+		for (const key in all) {
+			if (key.startsWith('CHECKPOINT_')) {
+				try {
+					const checkpoint = JSON.parse(all[key]);
+					checkpoint.key = key;
+					checkpoints.push(checkpoint);
+				} catch (e) {
+					Logger.log(`[CHECKPOINT] Skipping malformed checkpoint: ${key}`);
+				}
+			}
+		}
+		
+		return checkpoints;
+	} catch (e) {
+		Logger.log(`[CHECKPOINT] Failed to get all checkpoints: ${e.message}`);
+		return [];
+	}
+}
+
+/**
+ * Clean up old checkpoints (older than 24 hours)
+ */
+function cleanupOldCheckpoints_() {
+	try {
+		const checkpoints = getAllCheckpoints_();
+		const cutoff = Date.now() - (24 * 60 * 60 * 1000); // 24 hours
+		let cleaned = 0;
+		
+		const props = PropertiesService.getScriptProperties();
+		for (const cp of checkpoints) {
+			if (cp.lastAttempt < cutoff) {
+				props.deleteProperty(cp.key);
+				cleaned++;
+				Logger.log(`[CHECKPOINT] Cleaned stale checkpoint: ${cp.batchId} (${Math.round((Date.now() - cp.lastAttempt) / 3600000)}h old)`);
+			}
+		}
+		
+		if (cleaned > 0) {
+			Logger.log(`[CHECKPOINT] Cleanup complete: ${cleaned} old checkpoint(s) removed`);
+		}
+		return cleaned;
+	} catch (e) {
+		Logger.log(`[CHECKPOINT] Cleanup failed: ${e.message}`);
+		return 0;
+	}
 }
 
 function storeCombinedAuditResults_(newResults) {
@@ -9451,6 +9645,7 @@ function runNightlyMaintenance() {
 
 	invoke('updatePlacementNamesFromReports', () => updatePlacementNamesFromReports());
 	invoke('clearDailyScriptProperties', () => clearDailyScriptProperties());
+	invoke('cleanupOldCheckpoints', () => cleanupOldCheckpoints_());
 	invoke('cleanupOldAuditFiles', () => cleanupOldAuditFiles());
 	invoke('deleteOldAuditEmails', () => deleteOldAuditEmails());
 
