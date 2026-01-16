@@ -3027,6 +3027,18 @@ function runAuditBatch(configs, isFinal = false) {
 };
  results.push(entry);
  storeCombinedAuditResults_([entry]);
+ 
+ // Save incremental progress to Script Properties after each config
+ try {
+	 const props = PropertiesService.getScriptProperties();
+	 const key = AUDIT_RUN_STATE_KEY_PREFIX + batchId;
+	 const raw = props.getProperty(key);
+	 const state = raw ? JSON.parse(raw) : {};
+	 state.results = results.map(r => ({ name: r.name, status: r.status }));
+	 state.lastUpdated = Date.now();
+	 props.setProperty(key, JSON.stringify(state));
+ } catch (e) { Logger.log('Failed to save incremental progress: ' + e.message); }
+ 
  } catch (err) {
  const entry = {
  name: config.name,
@@ -3039,6 +3051,17 @@ function runAuditBatch(configs, isFinal = false) {
  };
  results.push(entry);
  storeCombinedAuditResults_([entry]);
+ 
+ // Save error to Script Properties too
+ try {
+	 const props = PropertiesService.getScriptProperties();
+	 const key = AUDIT_RUN_STATE_KEY_PREFIX + batchId;
+	 const raw = props.getProperty(key);
+	 const state = raw ? JSON.parse(raw) : {};
+	 state.results = results.map(r => ({ name: r.name, status: r.status }));
+	 state.lastUpdated = Date.now();
+	 props.setProperty(key, JSON.stringify(state));
+ } catch (e) { Logger.log('Failed to save error progress: ' + e.message); }
  }
  }
 
