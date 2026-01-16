@@ -3387,9 +3387,14 @@ function rerunFailedConfigs() {
 		// Get today's results from cache first
 		let results = getCombinedAuditResults_();
 		
-		// Fallback: if cache is empty, check Script Properties for recent audit run states
-		if (!results || results.length === 0) {
-			Logger.log('[RERUN] Cache empty, checking Script Properties for recent runs...');
+		// Get all active configs to check if cache is complete
+		const allActiveConfigs = getAuditConfigs();
+		const expectedCount = allActiveConfigs.length;
+		const cacheCount = results ? results.length : 0;
+		
+		// Fallback: if cache is empty OR incomplete (has less than half expected configs), check Script Properties
+		if (!results || results.length === 0 || results.length < expectedCount * 0.5) {
+			Logger.log(`[RERUN] Cache has ${cacheCount}/${expectedCount} configs, checking Script Properties for complete data...`);
 			const props = PropertiesService.getScriptProperties();
 			const listRaw = props.getProperty('CM360_AUDIT_RUN_LIST_V1');
 			
@@ -3399,9 +3404,9 @@ function rerunFailedConfigs() {
 				const recentResults = [];
 				const seenConfigs = new Set();
 				
-				Logger.log(`[RERUN] Checking ${batchIds.length} batch IDs for today (${todayStr})`);
+				Logger.log(`[RERUN] Checking last 20 batch IDs from ${batchIds.length} total batches`);
 				
-				// Check recent batch runs (most recent first) - look at ALL batches, not just today's
+				// Check recent batch runs (most recent first) - look at last 20 batches
 				for (let i = batchIds.length - 1; i >= 0 && i >= batchIds.length - 20; i--) {
 					const batchId = batchIds[i];
 					
@@ -3427,8 +3432,8 @@ function rerunFailedConfigs() {
 					}
 				}
 				
-				if (recentResults.length > 0) {
-					Logger.log(`[RERUN] Found ${recentResults.length} unique configs from Script Properties`);
+				if (recentResults.length > cacheCount) {
+					Logger.log(`[RERUN] Found ${recentResults.length} unique configs from Script Properties (better than cache's ${cacheCount})`);
 					results = recentResults;
 				}
 			}
@@ -3441,8 +3446,7 @@ function rerunFailedConfigs() {
 		
 		Logger.log(`[RERUN] Analyzing ${results.length} config results`);
 		
-		// Get all active configs from Recipients to compare
-		const allActiveConfigs = getAuditConfigs();
+		// Use the allActiveConfigs we already loaded earlier
 		const completedNames = new Set(results.map(r => r.name).filter(Boolean));
 		
 		// Find configs that didn't run at all
