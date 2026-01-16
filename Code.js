@@ -3397,12 +3397,13 @@ function rerunFailedConfigs() {
 				const batchIds = JSON.parse(listRaw);
 				const todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd');
 				const recentResults = [];
+				const seenConfigs = new Set();
 				
-				// Check recent batch runs (most recent first)
-				for (let i = batchIds.length - 1; i >= 0 && recentResults.length < 50; i--) {
+				Logger.log(`[RERUN] Checking ${batchIds.length} batch IDs for today (${todayStr})`);
+				
+				// Check recent batch runs (most recent first) - look at ALL batches, not just today's
+				for (let i = batchIds.length - 1; i >= 0 && i >= batchIds.length - 20; i--) {
 					const batchId = batchIds[i];
-					// Only check today's batches
-					if (!batchId.includes(todayStr)) continue;
 					
 					const stateKey = 'CM360_AUDIT_RUN_STATE_V1_' + batchId;
 					const stateRaw = props.getProperty(stateKey);
@@ -3410,10 +3411,14 @@ function rerunFailedConfigs() {
 					
 					try {
 						const state = JSON.parse(stateRaw);
+						Logger.log(`[RERUN] Batch ${batchId.substring(0, 50)}... has ${state.results ? state.results.length : 0} results`);
+						
 						if (state.results && Array.isArray(state.results)) {
 							state.results.forEach(r => {
-								if (!recentResults.some(existing => existing.name === r.name)) {
+								// Only add if we haven't seen this config yet (most recent wins)
+								if (!seenConfigs.has(r.name)) {
 									recentResults.push(r);
+									seenConfigs.add(r.name);
 								}
 							});
 						}
@@ -3423,7 +3428,7 @@ function rerunFailedConfigs() {
 				}
 				
 				if (recentResults.length > 0) {
-					Logger.log(`[RERUN] Found ${recentResults.length} results from Script Properties`);
+					Logger.log(`[RERUN] Found ${recentResults.length} unique configs from Script Properties`);
 					results = recentResults;
 				}
 			}
