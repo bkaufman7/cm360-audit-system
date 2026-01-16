@@ -3411,13 +3411,17 @@ function rerunFailedConfigs() {
 			return;
 		}
 		
-		// Find failed configs
+		// Find failed configs - include incomplete, not started, in progress, errors, and explicit failures
 		const failedConfigs = results.filter(r => {
 			const status = String(r.status || '').toLowerCase();
 			return r.failed || 
 				   status.includes('failed') || 
 				   status.includes('error') ||
-				   status.includes('max timeout retries');
+				   status.includes('max timeout retries') ||
+				   status.includes('not started') ||
+				   status.includes('in progress') ||
+				   status.includes('no run recorded') ||
+				   status.includes('no completion logged');
 		});
 		
 		if (failedConfigs.length === 0) {
