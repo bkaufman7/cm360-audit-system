@@ -3361,8 +3361,51 @@ function rerunFailedConfigs() {
 	const ui = SpreadsheetApp.getUi();
 	
 	try {
-		// Get today's results
-		const results = getCombinedAuditResults_();
+		// Get today's results from cache first
+		let results = getCombinedAuditResults_();
+		
+		// Fallback: if cache is empty, check Script Properties for recent audit run states
+		if (!results || results.length === 0) {
+			Logger.log('[RERUN] Cache empty, checking Script Properties for recent runs...');
+			const props = PropertiesService.getScriptProperties();
+			const listRaw = props.getProperty('CM360_AUDIT_RUN_LIST_V1');
+			
+			if (listRaw) {
+				const batchIds = JSON.parse(listRaw);
+				const todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd');
+				const recentResults = [];
+				
+				// Check recent batch runs (most recent first)
+				for (let i = batchIds.length - 1; i >= 0 && recentResults.length < 50; i--) {
+					const batchId = batchIds[i];
+					// Only check today's batches
+					if (!batchId.includes(todayStr)) continue;
+					
+					const stateKey = 'CM360_AUDIT_RUN_STATE_V1_' + batchId;
+					const stateRaw = props.getProperty(stateKey);
+					if (!stateRaw) continue;
+					
+					try {
+						const state = JSON.parse(stateRaw);
+						if (state.results && Array.isArray(state.results)) {
+							state.results.forEach(r => {
+								if (!recentResults.some(existing => existing.name === r.name)) {
+									recentResults.push(r);
+								}
+							});
+						}
+					} catch (e) {
+						Logger.log(`[RERUN] Error parsing batch ${batchId}: ${e.message}`);
+					}
+				}
+				
+				if (recentResults.length > 0) {
+					Logger.log(`[RERUN] Found ${recentResults.length} results from Script Properties`);
+					results = recentResults;
+				}
+			}
+		}
+		
 		if (!results || results.length === 0) {
 			ui.alert('No Results Found', 'No audit results found for today. Run at least one audit first.', ui.ButtonSet.OK);
 			return;
