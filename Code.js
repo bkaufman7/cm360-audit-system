@@ -78,7 +78,7 @@ const DEDICATED_BATCH_CONFIGS = (function () {
 		const raw = PropertiesService.getScriptProperties().getProperty('DEDICATED_BATCH_CONFIGS');
 		if (raw) return String(raw).split(',').map(s => String(s || '').trim()).filter(Boolean);
 	} catch (e) {}
-	return ['NEXTSD01', 'NEXTSD02', 'DHC01', 'ENT01', 'GMNR01']; // default isolation for long-running config(s)
+	return ['NEXTSD01', 'NEXTSD02']; // default isolation for long-running config(s)
 })();
 
 // === SHEET NAME CONSTANTS ===
