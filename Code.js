@@ -4339,20 +4339,13 @@ function installAllAutomationTriggers(options) {
 		}
 	}
 
-	// === Resume timed-out batches - DISABLED (rely on manual "Rerun Failed Configs") ===
-	// Automatic resume disabled to stay under 20-trigger limit
-	// Manual recovery available via: Admin Controls → 🔄 Rerun Failed Configs
-	if (false && shouldInclude('resumeTimedOutBatches', ['resumeTimedOutBatches'])) {
+	// === Resume timed-out batches (runs once at 9:15 AM before status email) ===
+	if (shouldInclude('resumeTimedOutBatches', ['resumeTimedOutBatches'])) {
 		removeHandlers(['resumeTimedOutBatches'], 'resume checkpoint trigger');
-		const resumeTimes = [
-			{ hour: 8, minute: 15 },
-			{ hour: 8, minute: 45 }
-		];
-		resumeTimes.forEach(time => {
-			createTrigger('resumeTimedOutBatches', 
-				trig => trig.timeBased().atHour(time.hour).nearMinute(time.minute).everyDays(1).create(), 
-				`resume timed-out batches trigger (${time.hour}:${String(time.minute).padStart(2, '0')} AM)`);
-		});
+		// Single trigger at 9:15 AM - catches timeouts before 9:30 AM status email
+		createTrigger('resumeTimedOutBatches', 
+			trig => trig.timeBased().atHour(9).nearMinute(15).everyDays(1).create(), 
+			'resume timed-out batches trigger (9:15 AM)');
 	}
 
 	// === Summary failover ===
