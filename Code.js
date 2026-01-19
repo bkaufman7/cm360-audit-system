@@ -4339,17 +4339,14 @@ function installAllAutomationTriggers(options) {
 		}
 	}
 
-	// === Resume timed-out batches (runs every 15 minutes during audit window) ===
-	if (shouldInclude('resumeTimedOutBatches', ['resumeTimedOutBatches'])) {
+	// === Resume timed-out batches - DISABLED (rely on manual "Rerun Failed Configs") ===
+	// Automatic resume disabled to stay under 20-trigger limit
+	// Manual recovery available via: Admin Controls → 🔄 Rerun Failed Configs
+	if (false && shouldInclude('resumeTimedOutBatches', ['resumeTimedOutBatches'])) {
 		removeHandlers(['resumeTimedOutBatches'], 'resume checkpoint trigger');
-		// Run at 8:10, 8:25, 8:40, 8:55, 9:10, 9:25 AM
 		const resumeTimes = [
-			{ hour: 8, minute: 10 },
-			{ hour: 8, minute: 25 },
-			{ hour: 8, minute: 40 },
-			{ hour: 8, minute: 55 },
-			{ hour: 9, minute: 10 },
-			{ hour: 9, minute: 25 }
+			{ hour: 8, minute: 15 },
+			{ hour: 8, minute: 45 }
 		];
 		resumeTimes.forEach(time => {
 			createTrigger('resumeTimedOutBatches', 
