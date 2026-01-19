@@ -4339,17 +4339,13 @@ function installAllAutomationTriggers(options) {
 		}
 	}
 
-	// === Resume timed-out batches (runs every 15 minutes during audit window) ===
+	// === Resume timed-out batches (runs twice during audit window) ===
 	if (shouldInclude('resumeTimedOutBatches', ['resumeTimedOutBatches'])) {
 		removeHandlers(['resumeTimedOutBatches'], 'resume checkpoint trigger');
-		// Run at 8:10, 8:25, 8:40, 8:55, 9:10, 9:25 AM
+		// Run at 8:15 AM and 8:45 AM (catches early and mid-morning timeouts)
 		const resumeTimes = [
-			{ hour: 8, minute: 10 },
-			{ hour: 8, minute: 25 },
-			{ hour: 8, minute: 40 },
-			{ hour: 8, minute: 55 },
-			{ hour: 9, minute: 10 },
-			{ hour: 9, minute: 25 }
+			{ hour: 8, minute: 15 },
+			{ hour: 8, minute: 45 }
 		];
 		resumeTimes.forEach(time => {
 			createTrigger('resumeTimedOutBatches', 
