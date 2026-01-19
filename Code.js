@@ -69,8 +69,8 @@ const CONFIG_ORDER_PROPERTY_KEY = 'CM360_CONFIG_ORDER_V1';
 const EMAIL_BODY_BYTE_LIMIT = 90000; // ~90KB
 
 // Batch size for audit execution (number of configs per batch)
-// Requested: 2 per batch
-const BATCH_SIZE = 2;
+// Increased to 3 to stay under Apps Script's 20-trigger limit
+const BATCH_SIZE = 3;
 
 // Dedicated single-config batches (by config name). Override via Script Property DEDICATED_BATCH_CONFIGS (CSV).
 const DEDICATED_BATCH_CONFIGS = (function () {
