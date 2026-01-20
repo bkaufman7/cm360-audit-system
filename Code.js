@@ -1632,14 +1632,13 @@ function fetchDailyAuditAttachments(config, recipientsData) {
  return null;
  }
 
- // Use Gmail search query with date filter instead of getThreads()
+ // Use Gmail search query with date filter
  const tz = Session.getScriptTimeZone();
- const yesterday = new Date();
- yesterday.setDate(yesterday.getDate() - 1);
- const yesterdayStr = Utilities.formatDate(yesterday, tz, 'yyyy/MM/dd');
+ const today = new Date();
+ const todayStr = Utilities.formatDate(today, tz, 'yyyy/MM/dd');
  
- // Search for emails from yesterday or later (catches emails that arrive just after midnight)
- const searchQuery = `label:"${config.label}" after:${yesterdayStr}`;
+ // Search for emails from today only (files delivered overnight contain yesterday's data)
+ const searchQuery = `label:"${config.label}" after:${todayStr}`;
  Logger.log(`[IN] [${config.name}] Gmail search query: ${searchQuery}`);
  
  const threads = GmailApp.search(searchQuery);
