@@ -1673,10 +1673,13 @@ function fetchDailyAuditAttachments(config, recipientsData) {
  const name = file.getName();
  const type = file.getContentType();
 
- // Unzip file and save all .xlsx/.csv blobs
+ // Save .xlsx, .csv, or .zip files
  if (name.endsWith('.xlsx') && type === MimeType.MICROSOFT_EXCEL) {
  driveFolder.createFile(file);
  Logger.log(`[IN] [${config.name}] Saved Excel file: ${name}`);
+ } else if (name.endsWith('.csv') && type === MimeType.CSV) {
+ driveFolder.createFile(file);
+ Logger.log(`[IN] [${config.name}] Saved CSV file: ${name}`);
  } else if (name.endsWith('.zip') && type === MimeType.ZIP) {
  const blobs = Utilities.unzip(file);
  let count = 0;
