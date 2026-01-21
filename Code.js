@@ -4858,6 +4858,7 @@ function createAuditMenu(ui) {
  .addItem('🚫  Exclusions (create/open)', 'getOrCreateExclusionsSheet')
  .addItem('📧  Recipients (create/open)', 'getOrCreateRecipientsSheet')
  .addItem('�  Performance Drop Thresholds (create/open)', 'getOrCreatePerformanceDropThresholdsSheet')
+ .addItem('🔧  Migrate Performance Drop Thresholds', 'migratePerformanceDropThresholdsSheet')
  .addItem('�🔃  Refresh Recipients (Attachment Mode)', 'refreshRecipientsAttachmentMode')
  .addItem('🧩  CM360 Config Builder…', 'showConfigCreationHelper')
  .addSeparator()
