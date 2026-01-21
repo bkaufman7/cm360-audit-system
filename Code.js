@@ -3926,6 +3926,9 @@ ${String(row[14] ?? '').split('; ').map(f => `<div>${escapeHtml(f)}</div>`).join
 	</td>
 	</tr>`);
 
+	// Declare launchAttachment in outer scope so it can be accessed after buildHtmlBody
+	let launchAttachment = null;
+
 	const buildHtmlBody = (rowsToInclude, truncated) => {
 		// If using aggregated summary, show that instead of individual rows
 		let mainContent = '';
@@ -4029,7 +4032,6 @@ ${dropRows}
 		
 		// Build launch detection section if there are any launches
 		let launchSection = '';
-		let launchAttachment = null;
 		
 		if (launchDetections && launchDetections.length > 0) {
 			// Get toggle setting from thresholds
