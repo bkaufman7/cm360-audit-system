@@ -155,9 +155,10 @@ A sheet with 11 columns will be visible. Don't worry—you only need to fill in 
 | **F** | Enable Launch Detection | TRUE/FALSE | FALSE | Turn launch detection ON/OFF for this config |
 | **G** | Launch Window Days | Number | 3 | How many days back to look for new launches (e.g., 3 = flag if started in last 3 days) |
 | **H** | Launch Min Volume | Number | 100 | Minimum impressions OR clicks for launch detection (filters out test placements) |
-| **I** | Active | TRUE/FALSE | TRUE | Master on/off switch (FALSE = completely disabled) |
-| **J** | Last Updated | Auto | - | System-managed timestamp |
-| **K** | INSTRUCTIONS | Text | - | Column explanations (do not edit) |
+| **I** | Include Launch Attachment | Dropdown | blank | Controls how launches appear in emails (see options below) |
+| **J** | Active | TRUE/FALSE | TRUE | Master on/off switch (FALSE = completely disabled) |
+| **K** | Last Updated | Auto | - | System-managed timestamp |
+| **L** | INSTRUCTIONS | Text | - | Column explanations (do not edit) |
 Let's Set This Up (Follow Along!)
 
 ### Your First Setup: A 5-Minute Walkthrough
@@ -444,6 +445,272 @@ When new placements are detected, a **green-highlighted section** appears in you
 - **Planning verification** = confirm scheduled launches happened
 
 💡 **Use case:** Client asks "Did the new campaign launch yesterday?" → Check your email, instant answer!
+
+---
+
+## Column I: Launch Detection Display Options
+
+### TL;DR: Customize How You See Launches
+
+Column I controls how launch detection appears in your emails. This is critical when you have high-volume launches (1,000+ placements) that would overwhelm your email.
+
+**Quick Decision Guide:**
+- **Leave blank or "none"** → No launch section in email
+- **"table only"** → Show launches inline in email (good for <25 launches)
+- **"attachment only"** → No table, just Excel file (good for 1,000+ launches)
+- **"both"** → Table in email + Excel file (good for 25-100 launches)
+
+---
+
+### Option 1: Blank or "none" (Disabled)
+
+**Column I Value:** Leave blank or type `none`
+
+**What happens:**
+- ✅ Launch detection still runs in the background
+- ❌ No launch section appears in your email
+- ❌ No Excel attachment created
+- ✅ Launches still excluded from regular flags
+
+**Best for:**
+- Configs where you don't care about launches
+- When you only want performance drop alerts
+- Testing configurations
+
+**Example:**
+```
+Config: OLDCLIENT01
+Enable Launch Detection: TRUE
+Launch Window Days: 3
+Include Launch Attachment: [blank]
+```
+**Result:** System tracks launches but doesn't send you notifications.
+
+---
+
+### Option 2: "table only" (Email Table)
+
+**Column I Value:** `table only`
+
+**What happens:**
+- ✅ Launch section appears in email body
+- ✅ Shows detailed or summary table (depending on count)
+- ❌ No Excel attachment created
+- 📊 Format automatically adjusts based on volume
+
+**Best for:**
+- Small to medium launch volumes (1-50 placements)
+- When you want to see launches without opening attachments
+- Quick daily review scenarios
+
+**Email Format:**
+
+**For <25 launches (Detailed Table):**
+```
+🚀 New Launches Detected (12)
+
+┌───────────────────────────────────────────────────────────────────┐
+│ Launch Detection Criteria:                                        │
+│ • Within 3 days of start date                                     │
+│ • 100+ impressions                                                │
+│ • Grace period: 0 days (immediate detection)                      │
+└───────────────────────────────────────────────────────────────────┘
+
+Advertiser | Campaign        | Site    | Placement           | ID      | Start      | End        | Creative    | Impr. | Clicks | Launched
+-----------+-----------------+---------+---------------------+---------+------------+------------+-------------+-------+--------+---------
+Nike       | Spring Sale 2026| ESPN    | Homepage Takeover   | 1234567 | 2026-01-19 | 2026-02-28 | Banner 728x90| 1,245 | 34     | Yesterday
+Nike       | Spring Sale 2026| Sports.com| Sidebar Medium    | 1234568 | 2026-01-19 | 2026-02-28 | Banner 300x250| 892  | 21     | Yesterday
+```
+
+**10 columns:** Advertiser, Campaign, Site, Placement, Placement ID, Start Date, End Date, Creative, Impressions, Clicks, Launched
+
+**For ≥25 launches (Summary Table):**
+```
+🚀 New Launches Detected (47)
+
+┌───────────────────────────────────────────────────────────────────┐
+│ Launch Detection Criteria:                                        │
+│ • Within 3 days of start date                                     │
+│ • 100+ impressions                                                │
+│ • Grace period: 0 days (immediate detection)                      │
+└───────────────────────────────────────────────────────────────────┘
+
+Due to the high volume of launches, here's a summary:
+
+Campaign                    | Site          | Date Launched | # of Placements
+----------------------------+---------------+---------------+----------------
+Spring Sale 2026            | ESPN          | 2026-01-19    | 18
+Spring Sale 2026            | Sports.com    | 2026-01-19    | 12
+Holiday Promo Q1            | News Site     | 2026-01-20    | 8
+Back to School Campaign     | Education Hub | 2026-01-18    | 9
+
+Total: 47 placements launched across 3 campaigns
+```
+
+**4 columns:** Campaign, Site, Date Launched, # of Placements
+
+---
+
+### Option 3: "attachment only" (Excel File)
+
+**Column I Value:** `attachment only`
+
+**What happens:**
+- ❌ No launch table in email body
+- ✅ Excel attachment created with all launch details
+- ✅ Simple message: "See attached Excel file"
+- 📎 Filename: `CM360_Launches_ConfigName_20260121.xlsx`
+
+**Best for:**
+- **High-volume launches** (100-2,000 placements)
+- When email size becomes an issue
+- When you need to forward/analyze launch data
+- Large campaign rollouts
+
+**Email Format:**
+```
+🚀 New Launches Detected (1,247)
+
+┌───────────────────────────────────────────────────────────────────┐
+│ Launch Detection Criteria:                                        │
+│ • Within 3 days of start date                                     │
+│ • 100+ impressions                                                │
+│ • Grace period: 0 days (immediate detection)                      │
+└───────────────────────────────────────────────────────────────────┘
+
+Please see the attached Excel file for complete launch details.
+
+[Attachment: CM360_Launches_NEXTRS01_20260121.xlsx]
+```
+
+**Excel File Contains:**
+- All 1,247 placements with full details
+- 11 columns: Advertiser, Campaign, Site, Placement ID, Placement, Start Date, End Date, Creative, Impressions, Clicks, Days From Start
+- Sortable and filterable
+- Ready for analysis or client reporting
+
+---
+
+### Option 4: "both" (Table + Attachment)
+
+**Column I Value:** `both`
+
+**What happens:**
+- ✅ Launch table appears in email (detailed if <25, summary if ≥25)
+- ✅ Excel attachment also included
+- ✅ Best of both worlds
+
+**Best for:**
+- Medium-volume launches (25-100 placements)
+- When you want quick visibility AND detailed analysis
+- Client-facing reports that need backup data
+- Configs where launches are important enough for both views
+
+**Email Format:**
+```
+🚀 New Launches Detected (38)
+
+┌───────────────────────────────────────────────────────────────────┐
+│ Launch Detection Criteria:                                        │
+│ • Within 3 days of start date                                     │
+│ • 100+ impressions                                                │
+│ • Grace period: 0 days (immediate detection)                      │
+└───────────────────────────────────────────────────────────────────┘
+
+Due to the high volume of launches, here's a summary. See attached Excel file for complete details:
+
+Campaign                    | Site          | Date Launched | # of Placements
+----------------------------+---------------+---------------+----------------
+Spring Sale 2026            | ESPN          | 2026-01-19    | 18
+Spring Sale 2026            | Sports.com    | 2026-01-19    | 12
+Holiday Promo Q1            | News Site     | 2026-01-20    | 8
+
+Total: 38 placements launched across 2 campaigns
+
+[Attachment: CM360_Launches_NEXTRS01_20260121.xlsx]
+```
+
+---
+
+### HTML Table Structure (Technical Reference)
+
+**Detailed Table (<25 launches):**
+```html
+<table border="1" cellpadding="2" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse; margin-bottom:12px;">
+  <thead style="background-color:#c8e6c9;">
+    <tr>
+      <th style="padding:2px; width:140px;">Advertiser</th>
+      <th style="padding:2px; width:180px;">Campaign</th>
+      <th style="padding:2px; width:100px;">Site</th>
+      <th style="padding:2px; width:180px;">Placement</th>
+      <th style="padding:2px; width:100px;">Placement ID</th>
+      <th style="padding:2px; width:90px;">Start Date</th>
+      <th style="padding:2px; width:90px;">End Date</th>
+      <th style="padding:2px; width:180px;">Creative</th>
+      <th style="padding:2px; width:60px;">Impr.</th>
+      <th style="padding:2px; width:60px;">Clicks</th>
+      <th style="padding:2px; width:100px;">Launched</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="line-height:1.2; font-size:11px; background-color:#e6f4ea;">
+      <td style="padding:2px 4px;">Nike</td>
+      <td style="padding:2px 4px;">Spring Sale 2026</td>
+      <td style="padding:2px 4px;">ESPN</td>
+      <td style="padding:2px 4px;">Homepage Takeover</td>
+      <td style="padding:2px 4px;">1234567</td>
+      <td style="padding:2px 4px;">2026-01-19</td>
+      <td style="padding:2px 4px;">2026-02-28</td>
+      <td style="padding:2px 4px;">Banner 728x90</td>
+      <td style="padding:2px 4px; text-align:right;">1245</td>
+      <td style="padding:2px 4px; text-align:right;">34</td>
+      <td style="padding:2px 4px; text-align:center;">Yesterday</td>
+    </tr>
+    <!-- Alternating row colors: #e6f4ea and #d4edda -->
+  </tbody>
+</table>
+```
+
+**Summary Table (≥25 launches):**
+```html
+<table border="1" cellpadding="4" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse; margin-bottom:12px;">
+  <thead style="background-color:#c8e6c9;">
+    <tr>
+      <th style="padding:4px; width:35%;">Campaign</th>
+      <th style="padding:4px; width:25%;">Site</th>
+      <th style="padding:4px; width:20%;">Date Launched</th>
+      <th style="padding:4px; width:20%;"># of Placements</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="line-height:1.2; font-size:11px; background-color:#e6f4ea;">
+      <td style="padding:4px 6px;">Spring Sale 2026</td>
+      <td style="padding:4px 6px;">ESPN</td>
+      <td style="padding:4px 6px; text-align:center;">2026-01-19</td>
+      <td style="padding:4px 6px; text-align:center;"><strong>18</strong></td>
+    </tr>
+    <!-- Grouped by Campaign → Site → Date, sorted by date (newest first) then count (highest first) -->
+  </tbody>
+</table>
+<p style="font-family:Arial, sans-serif; font-size:12px; margin-top:8px;">
+  <strong>Total:</strong> 38 placements launched across 2 campaigns
+</p>
+```
+
+**Dynamic Header (All Formats):**
+```html
+<div style="font-family:Arial, sans-serif; background-color:#e8f5e9; border-left:4px solid #4caf50; padding:12px; margin:16px 0; border-radius:4px;">
+  <p style="margin:0; font-size:12px; line-height:1.6;">
+    <strong>🚀 Launch Detection Summary</strong><br>
+    The following criteria triggered these launch alerts:
+  </p>
+  <ul style="margin:8px 0 0 0; padding-left:20px; font-size:12px; line-height:1.8;">
+    <li><strong>Launch window:</strong> Within 3 days of start date</li>
+    <li><strong>Minimum volume:</strong> 100+ impressions</li>
+    <li><strong>Grace period:</strong> 0 days (immediate detection)</li>
+  </ul>
+</div>
+```
 
 ---
 

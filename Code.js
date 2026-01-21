@@ -4029,13 +4029,29 @@ ${dropRows}
 		
 		// Build launch detection section if there are any launches
 		let launchSection = '';
+		let launchAttachment = null;
+		
 		if (launchDetections && launchDetections.length > 0) {
-			const launchRows = launchDetections.map((launch, i) => {
-				const daysText = launch.daysFromStart === 0 ? 'Today' : 
-								 launch.daysFromStart === 1 ? 'Yesterday' : 
-								 `${launch.daysFromStart} days ago`;
-				
-				return `
+			// Get toggle setting from thresholds
+			const attachmentMode = config.thresholds && config.thresholds.includeLaunchAttachment 
+				? String(config.thresholds.includeLaunchAttachment).trim().toLowerCase() 
+				: '';
+			
+			// Handle toggle options: blank/none = skip entirely
+			if (attachmentMode === '' || attachmentMode === 'none') {
+				// Skip launch section completely
+			} else {
+				// Build table if mode is "table only" or "both"
+				if (attachmentMode === 'table only' || attachmentMode === 'both') {
+					// Determine format: <25 = detailed, ≥25 = summary
+					if (launchDetections.length < 25) {
+						// Build detailed table (current 11-column format)
+						const launchRows = launchDetections.map((launch, i) => {
+							const daysText = launch.daysFromStart === 0 ? 'Today' : 
+											 launch.daysFromStart === 1 ? 'Yesterday' : 
+											 `${launch.daysFromStart} days ago`;
+							
+							return `
 	<tr style="line-height:1.2; font-size:11px; background-color:${i % 2 === 0 ? '#e6f4ea' : '#d4edda'};">
 	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(launch.advertiser)}</td>
 	<td style="padding:2px 4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(launch.campaign)}</td>
@@ -4049,10 +4065,13 @@ ${dropRows}
 	<td style="padding:2px 4px; text-align:right;">${launch.clicks}</td>
 	<td style="padding:2px 4px; text-align:center;">${daysText}</td>
 	</tr>`;
-			}).join('');
-			
-			launchSection = `
+						}).join('');
+						
+						const header = buildLaunchDetectionHeader_(config.thresholds);
+						
+						launchSection = `
 	<h3 style="font-family:Arial, sans-serif; font-size:14px; margin-top:20px; margin-bottom:8px; color:#0f9d58;">🚀 New Launches Detected (${launchDetections.length})</h3>
+${header}
 	<p style="font-family:Arial, sans-serif; font-size:12px; margin-bottom:8px;">The following placements recently went live. Monitor their initial performance:</p>
 	<table border="1" cellpadding="2" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse; margin-bottom:12px;">
 	<thead style="background-color:#c8e6c9;">
@@ -4075,6 +4094,40 @@ ${launchRows}
 	</tbody>
 	</table>
 	`;
+					} else {
+						// Build summary table (≥25 launches)
+						const header = buildLaunchDetectionHeader_(config.thresholds);
+						const summaryTable = buildLaunchSummaryTable_(launchDetections, config.thresholds);
+						
+						launchSection = `
+	<h3 style="font-family:Arial, sans-serif; font-size:14px; margin-top:20px; margin-bottom:8px; color:#0f9d58;">🚀 New Launches Detected (${launchDetections.length})</h3>
+${header}
+	<p style="font-family:Arial, sans-serif; font-size:12px; margin-bottom:8px;">Due to the high volume of launches, here's a summary. See attached Excel file for complete details:</p>
+${summaryTable}
+	`;
+					}
+				}
+				
+				// Create attachment if mode is "attachment only" or "both"
+				if (attachmentMode === 'attachment only' || attachmentMode === 'both') {
+					const subjectDate = formatDate(new Date(), 'yyyyMMdd');
+					launchAttachment = createLaunchAttachment_(launchDetections, configName, subjectDate);
+					
+					if (launchAttachment) {
+						Logger.log(`[${configName}] Created launch attachment with ${launchDetections.length} placements`);
+					}
+					
+					// If "attachment only" mode, add a simple message instead of table
+					if (attachmentMode === 'attachment only' && !launchSection) {
+						const header = buildLaunchDetectionHeader_(config.thresholds);
+						launchSection = `
+	<h3 style="font-family:Arial, sans-serif; font-size:14px; margin-top:20px; margin-bottom:8px; color:#0f9d58;">🚀 New Launches Detected (${launchDetections.length})</h3>
+${header}
+	<p style="font-family:Arial, sans-serif; font-size:12px; margin-bottom:8px;">Please see the attached Excel file for complete launch details.</p>
+	`;
+					}
+				}
+			}
 		}
 
 		return `
@@ -4115,12 +4168,19 @@ ${launchSection}
 		Logger.log(`[${configName}] Email body size ${payloadSize.totalBytes}B with ${rowsToInclude} rows (limit ${EMAIL_BODY_BYTE_LIMIT}B).`);
 	}
 
+	// Build attachments array - include both flagged rows Excel and launch Excel (if applicable)
+	const attachments = [xlsxBlob];
+	if (launchAttachment) {
+		attachments.push(launchAttachment);
+		Logger.log(`[${configName}] Including launch attachment with ${launchDetections.length} placements`);
+	}
+
 		const emailSuccess = safeSendEmail({
 		to: resolveRecipients(configName, recipientsData),
 		cc: resolveCc(configName, recipientsData),
 		subject,
 		htmlBody,
-		attachments: [xlsxBlob]
+		attachments: attachments
 	}, `[${configName}]`);
 
 	if (!emailSuccess) {
@@ -7232,6 +7292,7 @@ function getOrCreatePerformanceDropThresholdsSheet() {
 				'Enable Launch Detection',
 				'Launch Window Days',
 				'Launch Min Volume',
+				'Include Launch Attachment',
 				'Active',
 				'Last Updated',
 				'INSTRUCTIONS'
@@ -7240,13 +7301,13 @@ function getOrCreatePerformanceDropThresholdsSheet() {
 			sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
 			
 			// Format the main headers
-			const mainHeaderRange = sheet.getRange(1, 1, 1, 10);
+			const mainHeaderRange = sheet.getRange(1, 1, 1, 11);
 			mainHeaderRange.setFontWeight('bold');
 			mainHeaderRange.setBackground('#4285f4');
 			mainHeaderRange.setFontColor('#ffffff');
 			
 			// Format the instructions header
-			const instructionsHeaderRange = sheet.getRange(1, 11, 1, 1);
+			const instructionsHeaderRange = sheet.getRange(1, 12, 1, 1);
 			instructionsHeaderRange.setFontWeight('bold');
 			instructionsHeaderRange.setBackground('#ff9900');
 			instructionsHeaderRange.setFontColor('#ffffff');
@@ -7269,9 +7330,17 @@ function getOrCreatePerformanceDropThresholdsSheet() {
 				.build();
 			enableLaunchRange.setDataValidation(enableLaunchRule);
 			
-			// Add dropdown validation for Active column (column I)
-			// Add dropdown validation for Active column (column I)
-			const activeRange = sheet.getRange('I2:I');
+			// Add dropdown validation for Include Launch Attachment column (column I)
+			const includeLaunchAttachmentRange = sheet.getRange('I2:I');
+			const includeLaunchAttachmentRule = SpreadsheetApp.newDataValidation()
+				.requireValueInList(['', 'none', 'table only', 'attachment only', 'both'])
+				.setAllowInvalid(false)
+				.setHelpText('Leave blank to disable, or select: table only, attachment only, or both')
+				.build();
+			includeLaunchAttachmentRange.setDataValidation(includeLaunchAttachmentRule);
+			
+			// Add dropdown validation for Active column (column J)
+			const activeRange = sheet.getRange('J2:J');
 			const activeRule = SpreadsheetApp.newDataValidation()
 				.requireValueInList(['TRUE', 'FALSE'])
 				.setAllowInvalid(false)
@@ -7281,23 +7350,24 @@ function getOrCreatePerformanceDropThresholdsSheet() {
 			
 			// Add instruction rows
 			const instructions = [
-				['', '', '', '', '', '', '', '', '', '', 'Config Name: The audit config team name (must match Recipients sheet)'],
-				['', '', '', '', '', '', '', '', '', '', 'Enable Performance Drop: TRUE to check for drops, FALSE to skip'],
-				['', '', '', '', '', '', '', '', '', '', 'Drop Percentage Threshold: Percentage drop to flag (e.g., 50 for 50% drop)'],
-				['', '', '', '', '', '', '', '', '', '', 'Min Volume Threshold: Minimum impressions OR clicks to flag (e.g., 200)'],
-				['', '', '', '', '', '', '', '', '', '', 'Grace Period Days: 0 to check from Day 1, >0 to skip first N days'],
-				['', '', '', '', '', '', '', '', '', '', 'Enable Launch Detection: TRUE to flag new launches, FALSE to skip'],
-				['', '', '', '', '', '', '', '', '', '', 'Launch Window Days: Days since placement start to flag as launch (e.g., 3)'],
-				['', '', '', '', '', '', '', '', '', '', 'Launch Min Volume: Minimum impressions OR clicks to flag launch (e.g., 100)'],
-				['', '', '', '', '', '', '', '', '', '', 'Active: Must be TRUE for this threshold to be used'],
-				['', '', '', '', '', '', '', '', '', '', 'Last Updated: Automatically set by the system'],
-				['', '', '', '', '', '', '', '', '', '', ''],
-				['Example Config', 'TRUE', '50', '200', '0', 'TRUE', '3', '100', 'TRUE', '', 'Example: Check drops from Day 1, flag launches within 3 days']
+				['', '', '', '', '', '', '', '', '', '', '', 'Config Name: The audit config team name (must match Recipients sheet)'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Enable Performance Drop: TRUE to check for drops, FALSE to skip'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Drop Percentage Threshold: Percentage drop to flag (e.g., 50 for 50% drop)'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Min Volume Threshold: Minimum impressions OR clicks to flag (e.g., 200)'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Grace Period Days: 0 to check from Day 1, >0 to skip first N days'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Enable Launch Detection: TRUE to flag new launches, FALSE to skip'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Launch Window Days: Days since placement start to flag as launch (e.g., 3)'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Launch Min Volume: Minimum impressions OR clicks to flag launch (e.g., 100)'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Include Launch Attachment: blank/none (no launch section), table only, attachment only, or both'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Active: Must be TRUE for this threshold to be used'],
+				['', '', '', '', '', '', '', '', '', '', '', 'Last Updated: Automatically set by the system'],
+				['', '', '', '', '', '', '', '', '', '', '', ''],
+				['Example Config', 'TRUE', '50', '200', '0', 'TRUE', '3', '100', 'both', 'TRUE', '', 'Example: Check drops from Day 1, flag launches within 3 days, include table and Excel attachment']
 			];
 			sheet.getRange(2, 1, instructions.length, headers.length).setValues(instructions);
 			
 			// Format instructions column
-			const instructionsColumnRange = sheet.getRange(2, 11, instructions.length, 1);
+			const instructionsColumnRange = sheet.getRange(2, 12, instructions.length, 1);
 			instructionsColumnRange.setFontStyle('italic');
 			instructionsColumnRange.setBackground('#fff8dc');
 			
@@ -7310,9 +7380,10 @@ function getOrCreatePerformanceDropThresholdsSheet() {
 			sheet.setColumnWidth(6, 180); // Enable Launch Detection
 			sheet.setColumnWidth(7, 150); // Launch Window Days
 			sheet.setColumnWidth(8, 150); // Launch Min Volume
-			sheet.setColumnWidth(9, 80); // Active
-			sheet.setColumnWidth(10, 120); // Last Updated
-			sheet.setColumnWidth(11, 450); // INSTRUCTIONS
+			sheet.setColumnWidth(9, 180); // Include Launch Attachment
+			sheet.setColumnWidth(10, 80); // Active
+			sheet.setColumnWidth(11, 120); // Last Updated
+			sheet.setColumnWidth(12, 550); // INSTRUCTIONS
 			
 			// Freeze header row
 			sheet.setFrozenRows(1);
@@ -7323,6 +7394,175 @@ function getOrCreatePerformanceDropThresholdsSheet() {
 		return sheet;
 	} catch (error) {
 		Logger.log(`❌ Error creating/accessing Performance Drop Thresholds sheet: ${error.message}`);
+		throw error;
+	}
+}
+
+/**
+ * MIGRATION SCRIPT: Migrate Performance Drop Thresholds Sheet to Include Column I
+ * 
+ * This function:
+ * 1. Backs up current data to a new sheet with timestamp
+ * 2. Logs all current values to console
+ * 3. Reads all existing threshold data
+ * 4. Deletes and recreates the sheet with correct structure (including Column I)
+ * 5. Restores all data values with Column I defaulted to blank (disabled)
+ * 
+ * Run this once from the Apps Script editor to migrate your existing sheet.
+ * After running, verify the data in the Performance Drop Thresholds sheet.
+ */
+function migratePerformanceDropThresholdsSheet() {
+	const ui = SpreadsheetApp.getUi();
+	
+	try {
+		Logger.log('=== STARTING PERFORMANCE DROP THRESHOLDS MIGRATION ===');
+		const spreadsheet = getConfigSpreadsheet();
+		const sheetName = PERFORMANCE_DROP_THRESHOLDS_SHEET_NAME;
+		const sheet = spreadsheet.getSheetByName(sheetName);
+		
+		if (!sheet) {
+			ui.alert('Migration Not Needed', 
+				'The Performance Drop Thresholds sheet does not exist yet.\n\n' +
+				'The sheet will be created with the correct structure when first accessed.',
+				ui.ButtonSet.OK);
+			Logger.log('Sheet does not exist - no migration needed');
+			return;
+		}
+		
+		// Confirm with user before proceeding
+		const confirmResponse = ui.alert(
+			'Migrate Performance Drop Thresholds Sheet?',
+			'This will:\n\n' +
+			'1. Create a backup copy of your current data\n' +
+			'2. Recreate the sheet with Column I (Include Launch Attachment)\n' +
+			'3. Restore all your existing values\n' +
+			'4. Set Column I to blank (disabled) for existing configs\n\n' +
+			'Do you want to proceed?',
+			ui.ButtonSet.YES_NO
+		);
+		
+		if (confirmResponse !== ui.Button.YES) {
+			Logger.log('Migration cancelled by user');
+			return;
+		}
+		
+		// === STEP 1: BACKUP CURRENT DATA ===
+		Logger.log('STEP 1: Creating backup...');
+		const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HHmmss');
+		const backupSheetName = `${sheetName}_BACKUP_${timestamp}`;
+		const backupSheet = sheet.copyTo(spreadsheet);
+		backupSheet.setName(backupSheetName);
+		Logger.log(`✅ Backup created: ${backupSheetName}`);
+		
+		// === STEP 2: READ ALL CURRENT DATA ===
+		Logger.log('STEP 2: Reading current data...');
+		const allData = sheet.getDataRange().getValues();
+		const headers = allData[0];
+		Logger.log(`Current headers (${headers.length} columns): ${JSON.stringify(headers)}`);
+		
+		// Parse data rows (skip header)
+		const dataRows = [];
+		for (let i = 1; i < allData.length; i++) {
+			const row = allData[i];
+			const configName = String(row[0] || '').trim();
+			
+			// Skip empty rows and instruction/example rows
+			if (!configName || 
+				configName.includes('INSTRUCTIONS') || 
+				configName.includes('Config Name:') || 
+				configName.includes('Example')) {
+				continue;
+			}
+			
+			const rowData = {
+				configName: configName,
+				enablePerformanceDrop: String(row[1] || '').trim(),
+				dropPercentageThreshold: row[2],
+				minVolumeThreshold: row[3],
+				gracePeriodDays: row[4],
+				enableLaunchDetection: String(row[5] || '').trim(),
+				launchWindowDays: row[6],
+				launchMinVolume: row[7],
+				// Column I doesn't exist yet in old structure
+				includeLaunchAttachment: '', // Default to blank (disabled)
+				active: String(row[8] || '').trim(), // Old column I becomes new column J
+				lastUpdated: row[9] || '' // Old column J becomes new column K
+			};
+			
+			dataRows.push(rowData);
+			Logger.log(`  Row ${i}: ${configName} - Active: ${rowData.active}`);
+		}
+		
+		Logger.log(`✅ Read ${dataRows.length} data rows`);
+		
+		// === STEP 3: DELETE OLD SHEET ===
+		Logger.log('STEP 3: Deleting old sheet...');
+		spreadsheet.deleteSheet(sheet);
+		Logger.log('✅ Old sheet deleted');
+		
+		// === STEP 4: CREATE NEW SHEET WITH CORRECT STRUCTURE ===
+		Logger.log('STEP 4: Creating new sheet with Column I...');
+		const newSheet = getOrCreatePerformanceDropThresholdsSheet();
+		Logger.log('✅ New sheet created with correct structure');
+		
+		// === STEP 5: RESTORE DATA ===
+		Logger.log('STEP 5: Restoring data...');
+		if (dataRows.length > 0) {
+			// Prepare data for writing (convert objects to arrays)
+			const restoreData = dataRows.map(row => [
+				row.configName,
+				row.enablePerformanceDrop,
+				row.dropPercentageThreshold,
+				row.minVolumeThreshold,
+				row.gracePeriodDays,
+				row.enableLaunchDetection,
+				row.launchWindowDays,
+				row.launchMinVolume,
+				row.includeLaunchAttachment, // New Column I - defaults to blank
+				row.active,
+				row.lastUpdated,
+				'' // INSTRUCTIONS column (empty for data rows)
+			]);
+			
+			// Find first empty data row (after instructions)
+			const newSheetData = newSheet.getDataRange().getValues();
+			let writeStartRow = 2; // Start after header
+			for (let i = 1; i < newSheetData.length; i++) {
+				const configName = String(newSheetData[i][0] || '').trim();
+				if (!configName || configName === 'Example Config') {
+					writeStartRow = i + 1; // Write after this row
+					break;
+				}
+			}
+			
+			// Write restored data
+			newSheet.getRange(writeStartRow, 1, restoreData.length, 12).setValues(restoreData);
+			Logger.log(`✅ Restored ${restoreData.length} config rows starting at row ${writeStartRow}`);
+		}
+		
+		// === STEP 6: SUMMARY ===
+		const summary = 
+			`Migration Complete! ✅\n\n` +
+			`• Backup created: ${backupSheetName}\n` +
+			`• ${dataRows.length} configs migrated\n` +
+			`• Column I (Include Launch Attachment) added\n` +
+			`• All existing values preserved\n` +
+			`• Column I set to blank (disabled) by default\n\n` +
+			`Next steps:\n` +
+			`1. Review the migrated data in Performance Drop Thresholds\n` +
+			`2. Update Column I for configs that need launch attachments\n` +
+			`3. Delete the backup sheet when satisfied\n\n` +
+			`Check the Logs (View > Logs) for detailed migration info.`;
+		
+		Logger.log('=== MIGRATION COMPLETE ===');
+		Logger.log(summary);
+		
+		ui.alert('Migration Successful!', summary, ui.ButtonSet.OK);
+		
+	} catch (error) {
+		const errorMsg = `Migration failed: ${error.message}\n\nStack: ${error.stack}`;
+		Logger.log(`❌ ERROR: ${errorMsg}`);
+		ui.alert('Migration Error', errorMsg, ui.ButtonSet.OK);
 		throw error;
 	}
 }
@@ -7346,7 +7586,9 @@ function loadPerformanceDropThresholdsFromSheet() {
 			const enableLaunch = String(row[5] || '').trim().toUpperCase();
 			const launchWindowDays = Number(row[6] || 3);
 			const launchMinVolume = Number(row[7] || 100);
-			const active = String(row[8] || '').trim().toUpperCase();
+			const includeLaunchAttachment = String(row[8] || '').trim().toLowerCase();
+			const active = String(row[9] || '').trim().toUpperCase();
+			const lastUpdated = row[10];
 			
 			// Skip empty rows, instruction rows, or inactive thresholds
 			if (!configName || active !== 'TRUE') {
@@ -7372,7 +7614,8 @@ function loadPerformanceDropThresholdsFromSheet() {
 				gracePeriod: Math.max(0, Math.floor(gracePeriod)),
 				launchDetectionEnabled: enableLaunch === 'TRUE',
 				launchWindowDays: Math.max(1, Math.floor(launchWindowDays)),
-				launchMinVolume: Math.max(0, launchMinVolume)
+				launchMinVolume: Math.max(0, launchMinVolume),
+				includeLaunchAttachment: includeLaunchAttachment // blank/none, table only, attachment only, both
 			};
 		}
 		
@@ -7725,6 +7968,150 @@ function detectLaunchesFromMergedData_(configName, currentData, thresholds, excl
 	} catch (error) {
 		Logger.log(`[${configName}] Error detecting launches: ${error.message}`);
 		return [];
+	}
+}
+
+/**
+ * Build launch detection summary table for ≥25 launches
+ * Groups by Campaign → Site → Date Launched, shows count
+ */
+function buildLaunchSummaryTable_(launchDetections, thresholds) {
+	// Group launches by campaign, site, and launch date
+	const groups = {};
+	
+	launchDetections.forEach(launch => {
+		const campaign = String(launch.campaign || 'Unknown Campaign').trim();
+		const site = String(launch.siteName || 'Unknown Site').trim();
+		const launchDate = launch.startDate ? formatDate(new Date(launch.startDate), 'yyyy-MM-dd') : 'Unknown';
+		
+		const key = `${campaign}|||${site}|||${launchDate}`;
+		if (!groups[key]) {
+			groups[key] = {
+				campaign,
+				site,
+				launchDate,
+				count: 0
+			};
+		}
+		groups[key].count++;
+	});
+	
+	// Sort by campaign, then site, then date (most recent first)
+	const sorted = Object.values(groups).sort((a, b) => {
+		if (a.campaign !== b.campaign) return a.campaign.localeCompare(b.campaign);
+		if (a.site !== b.site) return a.site.localeCompare(b.site);
+		return b.launchDate.localeCompare(a.launchDate);
+	});
+	
+	// Build HTML table
+	const rows = sorted.map((group, i) => `
+	<tr style="line-height:1.2; font-size:11px; background-color:${i % 2 === 0 ? '#e6f4ea' : '#d4edda'};">
+		<td style="padding:4px 6px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(group.campaign)}</td>
+		<td style="padding:4px 6px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(group.site)}</td>
+		<td style="padding:4px 6px; text-align:center;">${group.launchDate}</td>
+		<td style="padding:4px 6px; text-align:center;"><strong>${group.count}</strong></td>
+	</tr>`).join('');
+	
+	const totalCampaigns = new Set(sorted.map(g => g.campaign)).size;
+	
+	return `
+	<table border="1" cellpadding="4" cellspacing="0" width="100%" style="font-family:Arial, sans-serif; font-size:12px; table-layout:fixed; border-collapse:collapse; margin-bottom:12px;">
+		<thead style="background-color:#c8e6c9;">
+			<tr>
+				<th style="padding:4px; width:35%;">Campaign</th>
+				<th style="padding:4px; width:25%;">Site</th>
+				<th style="padding:4px; width:20%;">Date Launched</th>
+				<th style="padding:4px; width:20%;"># of Placements</th>
+			</tr>
+		</thead>
+		<tbody>
+${rows}
+		</tbody>
+	</table>
+	<p style="font-family:Arial, sans-serif; font-size:12px; margin-top:8px;"><strong>Total:</strong> ${launchDetections.length} placements launched across ${totalCampaigns} ${totalCampaigns === 1 ? 'campaign' : 'campaigns'}</p>`;
+}
+
+/**
+ * Build dynamic header for launch detection based on actual config thresholds
+ */
+function buildLaunchDetectionHeader_(thresholds) {
+	if (!thresholds) return '';
+	
+	const window = thresholds.launchWindowDays || 2;
+	const minVol = thresholds.launchMinVolume || 100;
+	const grace = thresholds.gracePeriod || 0;
+	
+	const windowText = window === 1 ? '1 day' : `${window} days`;
+	const graceText = grace === 0 ? '0 days (immediate detection)' : 
+	                  grace === 1 ? '1 day' : `${grace} days`;
+	
+	return `
+	<div style="font-family:Arial, sans-serif; background-color:#e8f5e9; border-left:4px solid #4caf50; padding:12px; margin:16px 0; border-radius:4px;">
+		<p style="margin:0; font-size:12px; line-height:1.6;">
+			<strong>🚀 Launch Detection Summary</strong><br>
+			The following criteria triggered these launch alerts:
+		</p>
+		<ul style="margin:8px 0 0 0; padding-left:20px; font-size:12px; line-height:1.8;">
+			<li><strong>Launch window:</strong> Within ${windowText} of start date</li>
+			<li><strong>Minimum volume:</strong> ${minVol}+ impressions</li>
+			<li><strong>Grace period:</strong> ${graceText}</li>
+		</ul>
+	</div>`;
+}
+
+/**
+ * Create Excel attachment with all launch details
+ */
+function createLaunchAttachment_(launchDetections, configName, subjectDate) {
+	try {
+		const tmp = SpreadsheetApp.create(`CM360_Launches_${configName}_${subjectDate}`);
+		const sh = tmp.getSheets()[0];
+		sh.setName('Launch Details');
+		
+		// Header row - all columns from merged report
+		const headers = [
+			'Advertiser', 'Campaign', 'Site', 'Placement ID', 'Placement',
+			'Start Date', 'End Date', 'Creative', 'Impressions', 'Clicks', 'Days From Start'
+		];
+		
+		sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+		sh.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#c8e6c9');
+		
+		// Data rows
+		const data = launchDetections.map(launch => [
+			launch.advertiser || '',
+			launch.campaign || '',
+			launch.siteName || '',
+			launch.placementId || '',
+			launch.placementName || '',
+			launch.startDate ? formatDate(new Date(launch.startDate), 'yyyy-MM-dd') : '',
+			launch.endDate ? formatDate(new Date(launch.endDate), 'yyyy-MM-dd') : '',
+			launch.creative || '',
+			launch.impressions || 0,
+			launch.clicks || 0,
+			launch.daysFromStart || 0
+		]);
+		
+		if (data.length > 0) {
+			sh.getRange(2, 1, data.length, headers.length).setValues(data);
+		}
+		
+		// Auto-resize columns
+		for (let i = 1; i <= headers.length; i++) {
+			sh.autoResizeColumn(i);
+		}
+		
+		// Convert to Excel blob
+		const blob = DriveApp.getFileById(tmp.getId()).getAs(MimeType.MICROSOFT_EXCEL);
+		blob.setName(`CM360_Launches_${configName}_${subjectDate}.xlsx`);
+		
+		// Delete temp spreadsheet
+		DriveApp.getFileById(tmp.getId()).setTrashed(true);
+		
+		return blob;
+	} catch (error) {
+		Logger.log(`Error creating launch attachment: ${error.message}`);
+		return null;
 	}
 }
 
