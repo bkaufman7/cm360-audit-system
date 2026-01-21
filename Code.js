@@ -2876,6 +2876,11 @@ function executeAudit(config, preloaded) {
  row[flagColIndex]
  ]);
 
+ // Attach performance threshold to config for emailFlaggedRows to access includeLaunchAttachment
+ if (perfThreshold) {
+	 config.thresholds = perfThreshold;
+ }
+
  if (displayRows.length > 0) {
 	 // If suppressed, don't actually send but report as would-send
 	 const suppressed = (typeof isEmailSuppressed_ === 'function' && isEmailSuppressed_());
@@ -4039,9 +4044,12 @@ ${dropRows}
 				? String(config.thresholds.includeLaunchAttachment).trim().toLowerCase() 
 				: '';
 			
+			Logger.log(`[${configName}] Launch attachment mode: '${attachmentMode}' (${launchDetections.length} launches)`);
+			
 			// Handle toggle options: blank/none = skip entirely
 			if (attachmentMode === '' || attachmentMode === 'none') {
 				// Skip launch section completely
+				Logger.log(`[${configName}] Skipping launch section (mode: '${attachmentMode}')`);
 			} else {
 				// Build table if mode is "table only" or "both"
 				if (attachmentMode === 'table only' || attachmentMode === 'both') {
