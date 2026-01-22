@@ -8112,12 +8112,24 @@ function createLaunchAttachment_(launchDetections, configName, subjectDate) {
 			sh.autoResizeColumn(i);
 		}
 		
-		// Convert to Excel blob
-		const blob = DriveApp.getFileById(tmp.getId()).getAs(MimeType.MICROSOFT_EXCEL);
+		// Convert to Excel blob using Drive API export
+		const fileId = tmp.getId();
+		const url = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=xlsx`;
+		const token = ScriptApp.getOAuthToken();
+		const response = UrlFetchApp.fetch(url, {
+			headers: { Authorization: 'Bearer ' + token },
+			muteHttpExceptions: true
+		});
+		
+		if (response.getResponseCode() !== 200) {
+			throw new Error(`Export failed with code ${response.getResponseCode()}: ${response.getContentText()}`);
+		}
+		
+		const blob = response.getBlob();
 		blob.setName(`CM360_Launches_${configName}_${subjectDate}.xlsx`);
 		
 		// Delete temp spreadsheet
-		DriveApp.getFileById(tmp.getId()).setTrashed(true);
+		DriveApp.getFileById(fileId).setTrashed(true);
 		
 		return blob;
 	} catch (error) {
