@@ -8157,7 +8157,7 @@ function extractPlacementDataForCache_(sheet, headers) {
 		
 		const pidIdx = getIndex('PlacementID');
 		const nameIdx = getIndex('Placement');
-		const siteIdx = getIndex('Site');
+		const siteIdx = getIndex('Site(CM360)');  // Match "Site (CM360)" column
 		const startIdx = getIndex('PlacementStartDate');
 		const endIdx = getIndex('PlacementEndDate');
 		const impIdx = getIndex('Impressions');
