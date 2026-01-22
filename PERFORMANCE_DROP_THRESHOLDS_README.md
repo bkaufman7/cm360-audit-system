@@ -1075,6 +1075,16 @@ A: Performance drops only check in-flight placements or placements that ended in
 **Q: Can I get hourly alerts instead of daily?**  
 A: Not currently. The system is designed for daily batch processing aligned with CM360 data availability.
 
+**Q: Excel attachment is blank or site names show "Unknown Site"?**  
+A: These issues were fixed in January 2026 updates:
+- **Blank Excel files**: Fixed by adding `SpreadsheetApp.flush()` before export to ensure all data is written
+- **"Unknown Site"**: Fixed by updating column lookup to match "Site (CM360)" header name
+- **Export errors**: Fixed by switching to Drive API export method for Excel conversion
+- If you see these issues, ensure your script is updated to the latest version (commit 19dbd0b or later)
+
+**Q: Launch section not appearing even with Column I = "both"?**  
+A: This was a scope issue fixed in January 2026. The launch attachment variable and performance threshold configuration were updated to ensure proper display. Update to latest version if still experiencing this.
+
 ---
 
 ## TL;DR (Quick Start)
