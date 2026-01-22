@@ -8112,6 +8112,9 @@ function createLaunchAttachment_(launchDetections, configName, subjectDate) {
 			sh.autoResizeColumn(i);
 		}
 		
+		// Flush changes to ensure data is written before export
+		SpreadsheetApp.flush();
+		
 		// Convert to Excel blob using Drive API export
 		const fileId = tmp.getId();
 		const url = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=xlsx`;
