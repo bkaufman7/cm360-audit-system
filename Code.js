@@ -3906,7 +3906,7 @@ function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsDat
 	const summaryText = `The following ${totalFlagged} ${plural(totalFlagged, 'placement', 'placements')} across ${uniqueCampaigns} ${plural(uniqueCampaigns, 'campaign', 'campaigns')} ${verb} flagged during the <strong>${configName}</strong> CM360 audit of yesterday's delivery. Please review:`;
 
 	// Check if we should use aggregated summary (100+ flags)
-	const useAggregatedSummary = totalFlagged >= 100;
+	const useAggregatedSummary = totalFlagged >= 40;
 	
 	// Build aggregated summary if threshold exceeded
 	let aggregatedSummaryHtml = '';
