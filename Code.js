@@ -2409,6 +2409,7 @@ function mergeDailyAuditExcels(folderId, mergedFolderPath, configName = 'Unknown
 
 // === MERGE & FLAG LOGIC ===
 function executeAudit(config, preloaded) {
+ const auditStartMs = Date.now();
  const now = new Date();
  const formattedNow = formatDate(now, 'yyyy-MM-dd HH:mm:ss');
  const configName = config.name;
@@ -2417,7 +2418,10 @@ function executeAudit(config, preloaded) {
  // Ensure Advanced Drive API is enabled before proceeding. If not, skip gracefully.
  if (!checkDriveApiEnabled()) {
 	Logger.log(`⚠️ [${configName}] Skipping audit: Drive API not enabled.`);
- return { status: 'Skipped: Drive API not enabled', flaggedCount: null, emailSent: false, emailTime: formattedNow };
+ const status = 'Skipped: Drive API not enabled';
+		const auditEndMs = Date.now();
+		logExecutionMetric_(configName, '', auditStartMs, auditEndMs, 0, status);
+ return { status, flaggedCount: null, emailSent: false, emailTime: formattedNow };
  }
  Logger.log(`[TEST] [${configName}] Audit started`);
 
@@ -2455,7 +2459,10 @@ function executeAudit(config, preloaded) {
 	 attachments: [],
 	 bccAdmin: true 
  }, configName);
- return { status: 'Skipped: No files found', flaggedCount: null, emailSent: true, emailTime: formattedNow };
+ const status = 'Skipped: No files found';
+		const auditEndMs = Date.now();
+		logExecutionMetric_(configName, '', auditStartMs, auditEndMs, 0, status);
+ return { status, flaggedCount: null, emailSent: true, emailTime: formattedNow };
  }
 
  // PERFORMANCE DROP DETECTION: Check yesterday's data before creating today's merge
@@ -2537,7 +2544,10 @@ function executeAudit(config, preloaded) {
 
  if (headerRowIndex === -1) {
 	 Logger.log(`❌ [${configName}] Header row not found in merged sheet (strict + fallback).`);
-	 return { status: 'Failed: Header not found', flaggedCount: null, emailSent: false, emailTime: formattedNow };
+	 const status = 'Failed: Header not found';
+	 const auditEndMs = Date.now();
+	 logExecutionMetric_(configName, '', auditStartMs, auditEndMs, 0, status);
+	 return { status, flaggedCount: null, emailSent: false, emailTime: formattedNow };
  }
 
  const headers = allData[headerRowIndex];
@@ -2696,8 +2706,11 @@ function executeAudit(config, preloaded) {
 		// If suppressed (silent check), do not actually send but report would-send/withheld
 		const suppressed = (typeof isEmailSuppressed_ === 'function' && isEmailSuppressed_());
 		if (suppressed) {
+			const status = withhold ? 'Completed (no issues; email would be withheld)' : 'Completed (no issues; email would be sent) ';
+			const auditEndMs = Date.now();
+			logExecutionMetric_(configName, '', auditStartMs, auditEndMs, 0, status);
 			return {
-				status: withhold ? 'Completed (no issues; email would be withheld)' : 'Completed (no issues; email would be sent) ',
+				status,
 				flaggedCount: 0,
 				emailSent: false,
 				emailTime: formattedNow,
@@ -2708,12 +2721,17 @@ function executeAudit(config, preloaded) {
 
 		if (withhold) {
 			Logger.log(`ℹ️ [${config.name}] No-issue email withheld: Recipients opted out of no-flag emails`);
-			return { status: 'Completed (no issues)', flaggedCount: 0, emailSent: false, emailTime: formattedNow, emailWithheld: true, latestReportUrl: mergedSheetUrl };
+			const status = 'Completed (no issues)';
+			const auditEndMs = Date.now();
+			logExecutionMetric_(configName, '', auditStartMs, auditEndMs, 0, status);
+			return { status, flaggedCount: 0, emailSent: false, emailTime: formattedNow, emailWithheld: true, latestReportUrl: mergedSheetUrl };
 		} else {
 			// No flags and not withheld: send the no-issues notice
 			SpreadsheetApp.flush();
 			const emailSent = sendNoIssueEmail(config, mergedSheetId, 'No issues were flagged', recipientsData);
 			const statusNoFlags = emailSent ? 'Completed (no issues)' : 'Completed (no issues, email failed to send)';
+			const auditEndMs = Date.now();
+			logExecutionMetric_(configName, '', auditStartMs, auditEndMs, 0, statusNoFlags);
 			return { status: statusNoFlags, flaggedCount: 0, emailSent, emailTime: formattedNow, latestReportUrl: mergedSheetUrl };
 		}
 	}
@@ -2886,18 +2904,25 @@ function executeAudit(config, preloaded) {
 	 const suppressed = (typeof isEmailSuppressed_ === 'function' && isEmailSuppressed_());
 	 const emailSent = suppressed ? false : emailFlaggedRows(mergedSheetId, displayRows, flaggedRows, config, recipientsData, performanceDrops, launchDetections);
  const status = emailSent ? 'Completed with flags' : 'Completed with flags (email failed to send)';
+	 const auditEndMs = Date.now();
+		logExecutionMetric_(configName, '', auditStartMs, auditEndMs, flaggedRows.length, status);
 	 return { status, flaggedCount: flaggedRows.length, emailSent, emailTime: formattedNow, latestReportUrl: mergedSheetUrl };
  } else {
 	 // Should not reach: displayRows corresponds to flagged case; keep existing fallback just in case
 	 const emailSent = emailFlaggedRows(mergedSheetId, displayRows, flaggedRows, config, recipientsData, performanceDrops, launchDetections);
 	 const status = emailSent ? 'Completed with flags' : 'Completed with flags (email failed to send)';
+	 const auditEndMs = Date.now();
+		logExecutionMetric_(configName, '', auditStartMs, auditEndMs, flaggedRows.length, status);
 	 return { status, flaggedCount: flaggedRows.length, emailSent, emailTime: formattedNow, latestReportUrl: mergedSheetUrl };
  
 }
 
  } catch (err) {
  Logger.log(` [${configName}] Unexpected error: ${err.message}`);
- return { status: `Error during audit: ${err.message}`, flaggedCount: null, emailSent: false, emailTime: formattedNow };
+ const status = `Error during audit: ${err.message}`;
+		const auditEndMs = Date.now();
+		logExecutionMetric_(configName, '', auditStartMs, auditEndMs, 0, status);
+ return { status, flaggedCount: null, emailSent: false, emailTime: formattedNow };
  }
 }
 
@@ -2993,6 +3018,9 @@ function runAuditBatch(configs, isFinal = false) {
  const startWall = Date.now();
  const HARD_TIMEOUT_MS = 6 * 60 * 1000; // 6 minutes typical hard cap
  const SOFT_GUARD_MS = HARD_TIMEOUT_MS - 30000; // warn/exit 30s before
+
+ // Ensure metrics sheets exist
+ ensureExecutionMetricsSheets_();
 
  // Preload config tables once per batch
  let preloaded = null;
@@ -3839,6 +3867,283 @@ function buildAggregatedFlagSummary_(flaggedRows, configName) {
 	return html;
 }
 
+// === EXECUTION METRICS & MONITORING ===
+
+/** Ensure sheet has a header row; writes headers if row 1 is empty. */
+function ensureSheetHeaders_(sheet, headers) {
+	if (!sheet) return;
+	const lastRow = sheet.getLastRow();
+	if (lastRow === 0) {
+		sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+		return;
+	}
+	const existing = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+	const hasAny = existing.some(value => String(value || '').trim() !== '');
+	if (!hasAny) {
+		sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+	}
+}
+
+/**
+ * Initialize or verify metrics sheets exist (hidden)
+ * Creates "Batch time audit" for raw data and "Batch time audit - Summary" for aggregated stats
+ */
+function ensureExecutionMetricsSheets_() {
+	try {
+		const ss = SpreadsheetApp.getActiveSpreadsheet();
+		const metricsHeaders = [
+			'Date', 'Config', 'Batch ID', 'Start Time', 'End Time', 'Duration (ms)', 'Flag Count', 'Status'
+		];
+		const summaryHeaders = [
+			'Config', 'Avg Duration (ms)', 'Min (ms)', 'Max (ms)', 'P50 (ms)', 'P75 (ms)', 'P90 (ms)', 'Total Runs', 'Last Updated'
+		];
+		
+		// Ensure raw metrics sheet exists
+		let metricsSheet = ss.getSheetByName('Batch time audit');
+		if (!metricsSheet) {
+			metricsSheet = ss.insertSheet('Batch time audit');
+			metricsSheet.hideSheet();
+			Logger.log('[METRICS] Created "Batch time audit" sheet');
+		}
+		ensureSheetHeaders_(metricsSheet, metricsHeaders);
+		
+		// Ensure summary sheet exists
+		let summarySheet = ss.getSheetByName('Batch time audit - Summary');
+		if (!summarySheet) {
+			summarySheet = ss.insertSheet('Batch time audit - Summary');
+			summarySheet.hideSheet();
+			Logger.log('[METRICS] Created "Batch time audit - Summary" sheet');
+		}
+		ensureSheetHeaders_(summarySheet, summaryHeaders);
+	} catch (e) {
+		Logger.log(`[METRICS] Failed to initialize sheets: ${e.message}`);
+	}
+}
+
+/**
+ * Log a single config execution metric to the raw metrics sheet
+ * Called after each config completes
+ */
+function logExecutionMetric_(configName, batchId, startMs, endMs, flagCount, status) {
+	try {
+		const ss = SpreadsheetApp.getActiveSpreadsheet();
+		let sheet = ss.getSheetByName('Batch time audit');
+		
+		if (!sheet) {
+			ensureExecutionMetricsSheets_();
+			sheet = ss.getSheetByName('Batch time audit');
+		}
+		
+		const now = new Date();
+		const duration = endMs - startMs;
+		const tz = Session.getScriptTimeZone();
+		
+		const row = [
+			Utilities.formatDate(now, tz, 'yyyy-MM-dd'),
+			configName,
+			batchId || '',
+			Utilities.formatDate(new Date(startMs), tz, 'HH:mm:ss'),
+			Utilities.formatDate(new Date(endMs), tz, 'HH:mm:ss'),
+			duration,
+			flagCount || 0,
+			status || 'Unknown'
+		];
+		
+		sheet.appendRow(row);
+		Logger.log(`[METRICS] Logged ${configName}: ${duration}ms | ${flagCount} flags | ${status}`);
+	} catch (e) {
+		Logger.log(`[METRICS] Failed to log execution metric: ${e.message}`);
+	}
+}
+
+/**
+ * Update summary aggregations in "Batch time audit - Summary" sheet
+ * Calculates P50/P75/P90 percentiles for each config
+ */
+function updateExecutionMetricsSummary_() {
+	try {
+		const ss = SpreadsheetApp.getActiveSpreadsheet();
+		let sheet = ss.getSheetByName('Batch time audit');
+		
+		if (!sheet) return; // No metrics yet
+		
+		// Get all data
+		const data = sheet.getDataRange().getValues();
+		if (data.length <= 1) return; // Only headers
+		
+		// Parse metrics (skip header)
+		const metrics = data.slice(1).map(row => ({
+			date: row[0],
+			config: row[1],
+			batchId: row[2],
+			duration: row[5],
+			flagCount: row[6],
+			status: row[7]
+		}));
+		
+		// Group by config
+		const byConfig = {};
+		metrics.forEach(m => {
+			if (!byConfig[m.config]) byConfig[m.config] = [];
+			byConfig[m.config].push(m.duration);
+		});
+		
+		// Build summary rows
+		const summaryData = [['Config', 'Avg Duration (ms)', 'Min (ms)', 'Max (ms)', 'P50 (ms)', 'P75 (ms)', 'P90 (ms)', 'Total Runs', 'Last Updated']];
+		
+		Object.entries(byConfig).sort().forEach(([config, durations]) => {
+			const sorted = durations.sort((a, b) => a - b);
+			const avg = Math.round(durations.reduce((a, b) => a + b, 0) / durations.length);
+			const min = Math.min(...durations);
+			const max = Math.max(...durations);
+			const p50 = sorted[Math.floor(sorted.length * 0.5)];
+			const p75 = sorted[Math.floor(sorted.length * 0.75)];
+			const p90 = sorted[Math.floor(sorted.length * 0.9)];
+			const lastUpdated = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+			
+			summaryData.push([config, avg, min, max, p50, p75, p90, durations.length, lastUpdated]);
+		});
+		
+		// Write to summary sheet
+		let summarySheet = ss.getSheetByName('Batch time audit - Summary');
+		if (!summarySheet) {
+			ensureExecutionMetricsSheets_();
+			summarySheet = ss.getSheetByName('Batch time audit - Summary');
+		}
+		
+		summarySheet.clear();
+		summarySheet.getRange(1, 1, summaryData.length, 9).setValues(summaryData);
+		
+		Logger.log(`[METRICS] Updated summary sheet with ${Object.keys(byConfig).length} configs`);
+	} catch (e) {
+		Logger.log(`[METRICS] Failed to update summary: ${e.message}`);
+	}
+}
+
+/** Open (and unhide) the raw timing audit sheet. */
+function openBatchTimeAuditSheet() {
+	ensureExecutionMetricsSheets_();
+	const ss = SpreadsheetApp.getActiveSpreadsheet();
+	const sheet = ss.getSheetByName('Batch time audit');
+	if (sheet) {
+		sheet.showSheet();
+		ss.setActiveSheet(sheet);
+	}
+}
+
+/** Open (and unhide) the timing audit summary sheet. */
+function openBatchTimeAuditSummarySheet() {
+	ensureExecutionMetricsSheets_();
+	const ss = SpreadsheetApp.getActiveSpreadsheet();
+	const sheet = ss.getSheetByName('Batch time audit - Summary');
+	if (sheet) {
+		sheet.showSheet();
+		ss.setActiveSheet(sheet);
+	}
+}
+
+/** Refresh the timing audit summary, then open it. */
+function refreshBatchTimeAuditSummary() {
+	ensureExecutionMetricsSheets_();
+	updateExecutionMetricsSummary_();
+	openBatchTimeAuditSummarySheet();
+}
+
+/**
+ * Automated rerun of failed configs (no UI button required)
+ * Can be triggered by time-based trigger, runs ~1 hour after main audits
+ * Detects configs that didn't complete and reruns them
+ */
+function rerunFailedConfigs_Automated() {
+	try {
+		Logger.log('[RERUN-AUTO] Starting automated rerun check');
+		
+		const props = PropertiesService.getScriptProperties();
+		
+		// Get all batch IDs from today's runs
+		const listRaw = props.getProperty(AUDIT_RUN_LIST_KEY);
+		const list = listRaw ? JSON.parse(listRaw) : [];
+		
+		if (!list.length) {
+			Logger.log('[RERUN-AUTO] No batch history found. Exiting.');
+			return;
+		}
+		
+		// Analyze latest status per config from run states
+		const allConfigs = new Set(getAuditConfigs().map(c => c.name));
+		const latestByConfig = {};
+		
+		list.forEach(batchId => {
+			const stateKey = AUDIT_RUN_STATE_KEY_PREFIX + batchId;
+			const raw = props.getProperty(stateKey);
+			if (raw) {
+				try {
+					const state = JSON.parse(raw);
+					if (state.results && Array.isArray(state.results)) {
+						state.results.forEach(r => {
+							if (r && r.name) latestByConfig[r.name] = r;
+						});
+					}
+				} catch (e) {}
+			}
+		});
+
+		const isRerunnableFailureStatus_ = (result) => {
+			if (!result) return true;
+			if (result.failed === true) return true;
+			const status = String(result.status || '').toLowerCase();
+			return status.includes('failed') ||
+				status.includes('error') ||
+				status.includes('max timeout retries') ||
+				status.includes('timed out') ||
+				status.includes('not started') ||
+				status.includes('in progress') ||
+				status.includes('no run recorded') ||
+				status.includes('no completion logged');
+		};
+		
+		// Identify configs that did not run OR ran with failure statuses
+		const failedConfigs = [];
+		allConfigs.forEach(config => {
+			if (isRerunnableFailureStatus_(latestByConfig[config])) {
+				failedConfigs.push(config);
+			}
+		});
+		
+		if (!failedConfigs.length) {
+			Logger.log('[RERUN-AUTO] All configs completed successfully. No reruns needed.');
+			updateExecutionMetricsSummary_();
+			return;
+		}
+		
+		Logger.log(`[RERUN-AUTO] Found ${failedConfigs.length} incomplete configs: ${failedConfigs.join(', ')}`);
+		
+		// Build config objects for rerun
+		const allConfigsMap = {};
+		getAuditConfigs().forEach(c => {
+			allConfigsMap[c.name] = c;
+		});
+		
+		const configsToRerun = failedConfigs.map(name => allConfigsMap[name]).filter(Boolean);
+		
+		if (!configsToRerun.length) {
+			Logger.log('[RERUN-AUTO] No matching config objects found.');
+			return;
+		}
+		
+		Logger.log(`[RERUN-AUTO] Rerunning ${configsToRerun.length} failed configs`);
+		
+		// Execute the rerun batch
+		runAuditBatch(configsToRerun, true);
+		
+		Logger.log('[RERUN-AUTO] Automated rerun completed. Updating summary...');
+		updateExecutionMetricsSummary_();
+		
+	} catch (e) {
+		Logger.log(`[RERUN-AUTO] Error: ${e.message}`);
+	}
+}
+
 // === EMAIL FLAGGED ROWS & REPORTS ===
 function emailFlaggedRows(sheetId, emailRows, flaggedRows, config, recipientsData, performanceDrops, launchDetections) {
  const configName = config.name;
@@ -4202,6 +4507,238 @@ ${launchSection}
  return emailSuccess;
 }
 
+// === EXECUTION METRICS & MONITORING ===
+
+/**
+ * Initialize or verify metrics sheets exist (hidden)
+ * Creates "Batch time audit" for raw data and "Batch time audit - Summary" for aggregated stats
+ */
+function ensureExecutionMetricsSheets_() {
+	try {
+		const ss = SpreadsheetApp.getActiveSpreadsheet();
+		const metricsHeaders = [
+			'Date', 'Config', 'Batch ID', 'Start Time', 'End Time', 'Duration (ms)', 'Flag Count', 'Status'
+		];
+		const summaryHeaders = [
+			'Config', 'Avg Duration (ms)', 'Min (ms)', 'Max (ms)', 'P50 (ms)', 'P75 (ms)', 'P90 (ms)', 'Total Runs', 'Last Updated'
+		];
+		
+		// Ensure raw metrics sheet exists
+		let metricsSheet = ss.getSheetByName('Batch time audit');
+		if (!metricsSheet) {
+			metricsSheet = ss.insertSheet('Batch time audit');
+			metricsSheet.hideSheet();
+			Logger.log('[METRICS] Created "Batch time audit" sheet');
+		}
+		ensureSheetHeaders_(metricsSheet, metricsHeaders);
+		
+		// Ensure summary sheet exists
+		let summarySheet = ss.getSheetByName('Batch time audit - Summary');
+		if (!summarySheet) {
+			summarySheet = ss.insertSheet('Batch time audit - Summary');
+			summarySheet.hideSheet();
+			Logger.log('[METRICS] Created "Batch time audit - Summary" sheet');
+		}
+		ensureSheetHeaders_(summarySheet, summaryHeaders);
+	} catch (e) {
+		Logger.log(`[METRICS] Failed to initialize sheets: ${e.message}`);
+	}
+}
+
+/**
+ * Log a single config execution metric to the raw metrics sheet
+ * Called after each config completes
+ */
+function logExecutionMetric_(configName, batchId, startMs, endMs, flagCount, status) {
+	try {
+		const ss = SpreadsheetApp.getActiveSpreadsheet();
+		let sheet = ss.getSheetByName('Batch time audit');
+		
+		if (!sheet) {
+			ensureExecutionMetricsSheets_();
+			sheet = ss.getSheetByName('Batch time audit');
+		}
+		
+		const now = new Date();
+		const duration = endMs - startMs;
+		const tz = Session.getScriptTimeZone();
+		
+		const row = [
+			Utilities.formatDate(now, tz, 'yyyy-MM-dd'),
+			configName,
+			batchId || '',
+			Utilities.formatDate(new Date(startMs), tz, 'HH:mm:ss'),
+			Utilities.formatDate(new Date(endMs), tz, 'HH:mm:ss'),
+			duration,
+			flagCount || 0,
+			status || 'Unknown'
+		];
+		
+		sheet.appendRow(row);
+		Logger.log(`[METRICS] Logged ${configName}: ${duration}ms | ${flagCount} flags | ${status}`);
+	} catch (e) {
+		Logger.log(`[METRICS] Failed to log execution metric: ${e.message}`);
+	}
+}
+
+/**
+ * Update summary aggregations in "Batch time audit - Summary" sheet
+ * Calculates P50/P75/P90 percentiles for each config
+ */
+function updateExecutionMetricsSummary_() {
+	try {
+		const ss = SpreadsheetApp.getActiveSpreadsheet();
+		let sheet = ss.getSheetByName('Batch time audit');
+		
+		if (!sheet) return; // No metrics yet
+		
+		// Get all data
+		const data = sheet.getDataRange().getValues();
+		if (data.length <= 1) return; // Only headers
+		
+		// Parse metrics (skip header)
+		const metrics = data.slice(1).map(row => ({
+			date: row[0],
+			config: row[1],
+			batchId: row[2],
+			duration: row[5],
+			flagCount: row[6],
+			status: row[7]
+		}));
+		
+		// Group by config
+		const byConfig = {};
+		metrics.forEach(m => {
+			if (!byConfig[m.config]) byConfig[m.config] = [];
+			byConfig[m.config].push(m.duration);
+		});
+		
+		// Build summary rows
+		const summaryData = [['Config', 'Avg Duration (ms)', 'Min (ms)', 'Max (ms)', 'P50 (ms)', 'P75 (ms)', 'P90 (ms)', 'Total Runs', 'Last Updated']];
+		
+		Object.entries(byConfig).sort().forEach(([config, durations]) => {
+			const sorted = durations.sort((a, b) => a - b);
+			const avg = Math.round(durations.reduce((a, b) => a + b, 0) / durations.length);
+			const min = Math.min(...durations);
+			const max = Math.max(...durations);
+			const p50 = sorted[Math.floor(sorted.length * 0.5)];
+			const p75 = sorted[Math.floor(sorted.length * 0.75)];
+			const p90 = sorted[Math.floor(sorted.length * 0.9)];
+			const lastUpdated = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+			
+			summaryData.push([config, avg, min, max, p50, p75, p90, durations.length, lastUpdated]);
+		});
+		
+		// Write to summary sheet
+		let summarySheet = ss.getSheetByName('Batch time audit - Summary');
+		if (!summarySheet) {
+			ensureExecutionMetricsSheets_();
+			summarySheet = ss.getSheetByName('Batch time audit - Summary');
+		}
+		
+		summarySheet.clear();
+		summarySheet.getRange(1, 1, summaryData.length, 9).setValues(summaryData);
+		
+		Logger.log(`[METRICS] Updated summary sheet with ${Object.keys(byConfig).length} configs`);
+	} catch (e) {
+		Logger.log(`[METRICS] Failed to update summary: ${e.message}`);
+	}
+}
+
+/**
+ * Automated rerun of failed configs (no UI button required)
+ * Run this as a scheduled trigger ~1 hour after main audits complete
+ * Detects configs that didn't complete and reruns them automatically
+ */
+function rerunFailedConfigs_Automated() {
+	try {
+		Logger.log('[RERUN-AUTO] Starting automated rerun check');
+		
+		const props = PropertiesService.getScriptProperties();
+		
+		// Get all batch IDs from today's runs
+		const listRaw = props.getProperty(AUDIT_RUN_LIST_KEY);
+		const list = listRaw ? JSON.parse(listRaw) : [];
+		
+		if (!list.length) {
+			Logger.log('[RERUN-AUTO] No batch history found. Exiting.');
+			return;
+		}
+		
+		// Analyze latest status per config from run states
+		const allConfigs = new Set(getAuditConfigs().map(c => c.name));
+		const latestByConfig = {};
+		
+		list.forEach(batchId => {
+			const stateKey = AUDIT_RUN_STATE_KEY_PREFIX + batchId;
+			const raw = props.getProperty(stateKey);
+			if (raw) {
+				try {
+					const state = JSON.parse(raw);
+					if (state.results && Array.isArray(state.results)) {
+						state.results.forEach(r => {
+							if (r && r.name) latestByConfig[r.name] = r;
+						});
+					}
+				} catch (e) {}
+			}
+		});
+
+		const isRerunnableFailureStatus_ = (result) => {
+			if (!result) return true;
+			if (result.failed === true) return true;
+			const status = String(result.status || '').toLowerCase();
+			return status.includes('failed') ||
+				status.includes('error') ||
+				status.includes('max timeout retries') ||
+				status.includes('timed out') ||
+				status.includes('not started') ||
+				status.includes('in progress') ||
+				status.includes('no run recorded') ||
+				status.includes('no completion logged');
+		};
+		
+		// Identify configs that did not run OR ran with failure statuses
+		const failedConfigs = [];
+		allConfigs.forEach(config => {
+			if (isRerunnableFailureStatus_(latestByConfig[config])) {
+				failedConfigs.push(config);
+			}
+		});
+		
+		if (!failedConfigs.length) {
+			Logger.log('[RERUN-AUTO] All configs completed successfully. No reruns needed.');
+			updateExecutionMetricsSummary_();
+			return;
+		}
+		
+		Logger.log(`[RERUN-AUTO] Found ${failedConfigs.length} incomplete configs: ${failedConfigs.join(', ')}`);
+		
+		// Build config objects for rerun
+		const allConfigsMap = {};
+		getAuditConfigs().forEach(c => {
+			allConfigsMap[c.name] = c;
+		});
+		
+		const configsToRerun = failedConfigs.map(name => allConfigsMap[name]).filter(Boolean);
+		
+		if (!configsToRerun.length) {
+			Logger.log('[RERUN-AUTO] No matching config objects found.');
+			return;
+		}
+		
+		Logger.log(`[RERUN-AUTO] Rerunning ${configsToRerun.length} failed configs`);
+		
+		// Execute the rerun batch
+		runAuditBatch(configsToRerun, true);
+		
+		Logger.log('[RERUN-AUTO] Automated rerun completed. Updating summary...');
+		updateExecutionMetricsSummary_();
+		
+	} catch (e) {
+		Logger.log(`[RERUN-AUTO] Error: ${e.message}`);
+	}
+}
 
 // Send a concise "no issues" notification with optional Excel attachment of the merged sheet
 function sendNoIssueEmail(config, spreadsheetId, note, recipientsData) {
@@ -4859,54 +5396,53 @@ function debugMenuCreation() {
 }
 
 function createAuditMenu(ui) {
- ui.createMenu('Admin Controls')
- // Setup
- .addItem('⚙️  Prepare Environment', 'prepareAuditEnvironment')
- .addSeparator()
- // Sheets — create/open
- .addItem('📄  Thresholds (create/open)', 'getOrCreateThresholdsSheet')
- .addItem('🚫  Exclusions (create/open)', 'getOrCreateExclusionsSheet')
- .addItem('📧  Recipients (create/open)', 'getOrCreateRecipientsSheet')
- .addItem('�  Performance Drop Thresholds (create/open)', 'getOrCreatePerformanceDropThresholdsSheet')
- .addItem('🔧  Migrate Performance Drop Thresholds', 'migratePerformanceDropThresholdsSheet')
- .addItem('�🔃  Refresh Recipients (Attachment Mode)', 'refreshRecipientsAttachmentMode')
- .addItem('🧩  CM360 Config Builder…', 'showConfigCreationHelper')
- .addSeparator()
-// External config (lean)
- .addItem('📤  Sync TO External Config', 'syncToExternalConfig')
- .addItem('📥  Sync FROM External Config', 'syncFromExternalConfig')
- .addSeparator()
- // (Removed) Script Properties config helpers
- // Requests
- .addItem('📝  Create Audit Request...', 'showCreateAuditRequestPicker')
- .addItem('▶️  Process Audit Requests', 'processAuditRequests')
- .addItem('🛠️  Fix Audit Requests Sheet', 'fixAuditRequestsSheet')
- .addSeparator()
- // Tools & Utilities
- .addItem('🔁  Update Placement Names', 'updatePlacementNamesFromReportsWithUI')
- .addItem('🔐  Check Authorization', 'checkAuthorizationStatus')
- .addItem('🧾  Validate Configs', 'debugValidateAuditConfigs')
- .addItem('🔍  Verify NEXTSD01 Isolation', 'verifyNEXTSD01Isolation')
- .addItem('⏱️  Install All Triggers', 'installAllAutomationTriggers')
- .addItem('🔄  Sync Delivery Mode Now', 'runDeliveryModeSync')
- .addItem('📮  Debug Email Delivery', 'debugEmailDeliveryStatus')
- .addItem('✉️  Send Test Admin Email', 'sendTestAdminEmail')
- .addItem('👀  Preview Daily Summary', 'previewDailySummaryNow')
- .addItem('🔎  Silent Withhold Check…', 'showSilentWithholdCheck')
- .addItem('🩺  Run Health Check (Admin)', 'runHealthCheckAndEmail')
- .addItem('🧪  Test Thresholds…', 'showThresholdTestPicker')
- .addSeparator()
- // Manual Run Options
- .addItem('🧪  [TEST] Run Batch or Config', 'showBatchTestPicker')
- .addItem('▶️  Run Audit for...', 'showConfigPicker')
- .addItem('🔄  Rerun Failed Configs', 'rerunFailedConfigs')
- .addSeparator()
- // Access Tools (no sidebar)
- .addItem('📦  Batch Assignments', 'showBatchAssignmentsModal')
- .addItem('⏰  Install Health Check Trigger', 'installHealthCheckTrigger')
- .addItem('🛡️  Install Audit Watchdog Trigger', 'installAuditWatchdogTrigger')
- .addItem('ℹ️  About Admin Controls…', 'showAdminControlsHelp')
- .addToUi();
+	ui.createMenu('Admin Controls')
+		.addSubMenu(ui.createMenu('🧰  Setup')
+			.addItem('⚙️  Prepare Environment', 'prepareAuditEnvironment')
+			.addItem('🔐  Check Authorization', 'checkAuthorizationStatus'))
+		.addSubMenu(ui.createMenu('📄  Sheets')
+			.addItem('📄  Thresholds (create/open)', 'getOrCreateThresholdsSheet')
+			.addItem('🚫  Exclusions (create/open)', 'getOrCreateExclusionsSheet')
+			.addItem('📧  Recipients (create/open)', 'getOrCreateRecipientsSheet')
+			.addItem('�  Performance Drop Thresholds (create/open)', 'getOrCreatePerformanceDropThresholdsSheet')
+			.addItem('🔧  Migrate Performance Drop Thresholds', 'migratePerformanceDropThresholdsSheet')
+			.addItem('�🔃  Refresh Recipients (Attachment Mode)', 'refreshRecipientsAttachmentMode')
+			.addItem('🧩  CM360 Config Builder…', 'showConfigCreationHelper'))
+		.addSubMenu(ui.createMenu('🔄  External Config')
+			.addItem('📤  Sync TO External Config', 'syncToExternalConfig')
+			.addItem('📥  Sync FROM External Config', 'syncFromExternalConfig'))
+		.addSubMenu(ui.createMenu('📝  Requests')
+			.addItem('📝  Create Audit Request...', 'showCreateAuditRequestPicker')
+			.addItem('▶️  Process Audit Requests', 'processAuditRequests')
+			.addItem('🛠️  Fix Audit Requests Sheet', 'fixAuditRequestsSheet'))
+		.addSubMenu(ui.createMenu('🧪  Run')
+			.addItem('🧪  [TEST] Run Batch or Config', 'showBatchTestPicker')
+			.addItem('▶️  Run Audit for...', 'showConfigPicker')
+			.addItem('🔄  Rerun Failed Configs', 'rerunFailedConfigs'))
+		.addSubMenu(ui.createMenu('🧯  Diagnostics')
+			.addItem('🔁  Update Placement Names', 'updatePlacementNamesFromReportsWithUI')
+			.addItem('🧾  Validate Configs', 'debugValidateAuditConfigs')
+			.addItem('🔍  Verify NEXTSD01 Isolation', 'verifyNEXTSD01Isolation')
+			.addItem('📮  Debug Email Delivery', 'debugEmailDeliveryStatus')
+			.addItem('✉️  Send Test Admin Email', 'sendTestAdminEmail')
+			.addItem('👀  Preview Daily Summary', 'previewDailySummaryNow')
+			.addItem('🔎  Silent Withhold Check…', 'showSilentWithholdCheck')
+			.addItem('🩺  Run Health Check (Admin)', 'runHealthCheckAndEmail')
+			.addItem('🧪  Test Thresholds…', 'showThresholdTestPicker'))
+		.addSubMenu(ui.createMenu('⏱️  Timing Audit')
+			.addItem('📊  Open Timing Audit (create/open)', 'openBatchTimeAuditSheet')
+			.addItem('📈  Open Timing Summary (create/open)', 'openBatchTimeAuditSummarySheet')
+			.addItem('🔄  Refresh Timing Summary', 'refreshBatchTimeAuditSummary'))
+		.addSubMenu(ui.createMenu('🧩  Batch Tools')
+			.addItem('📦  Batch Assignments', 'showBatchAssignmentsModal'))
+		.addSubMenu(ui.createMenu('⏰  Triggers')
+			.addItem('⏱️  Install All Triggers', 'installAllAutomationTriggers')
+			.addItem('⏰  Install Health Check Trigger', 'installHealthCheckTrigger')
+			.addItem('🛡️  Install Audit Watchdog Trigger', 'installAuditWatchdogTrigger')
+			.addItem('🔄  Sync Delivery Mode Now', 'runDeliveryModeSync'))
+		.addSubMenu(ui.createMenu('ℹ️  Help')
+			.addItem('ℹ️  About Admin Controls…', 'showAdminControlsHelp'))
+		.addToUi();
 }
 
 // Provide help metadata for Admin Controls items
@@ -4936,6 +5472,9 @@ function getAdminControlsHelpItems() {
 		{ label: '🔎  Silent Withhold Check…', fn: 'showSilentWithholdCheck', desc: 'Pick a config to simulate an audit’s email decision (send vs withhold) without sending.' },
 		{ label: '🩺  Run Health Check (Admin)', fn: 'runHealthCheckAndEmail', desc: 'Performs a fast, read-only workflow health check and emails the admin.' },
 		{ label: '🧪  Test Thresholds…', fn: 'showThresholdTestPicker', desc: 'Run a full audit for selected config with detailed threshold logging to diagnose threshold filtering.' },
+		{ label: '📊  Open Timing Audit (create/open)', fn: 'openBatchTimeAuditSheet', desc: 'Creates (if missing) and opens the raw timing audit sheet with execution logs.' },
+		{ label: '📈  Open Timing Summary (create/open)', fn: 'openBatchTimeAuditSummarySheet', desc: 'Creates (if missing) and opens the timing audit summary sheet with percentiles.' },
+		{ label: '🔄  Refresh Timing Summary', fn: 'refreshBatchTimeAuditSummary', desc: 'Rebuilds the timing summary sheet from the raw timing audit data.' },
 		{ label: '🧪  [TEST] Run Batch or Config', fn: 'showBatchTestPicker', desc: 'Pick a batch or specific config to run on demand for testing.' },
 		{ label: '▶️  Run Audit for...', fn: 'showConfigPicker', desc: 'Pick any single config to run a one-off audit now.' },
 		{ label: '�  Rerun Failed Configs', fn: 'rerunFailedConfigs', desc: 'Automatically finds and reruns all configs that failed today (errors or max retries exceeded). Clears checkpoints for fresh start.' },
