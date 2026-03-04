@@ -1380,6 +1380,178 @@ Thresholds are **minimum volume requirements**, not percentage tolerances. A row
 - Default: `N` if property missing
 - Location: Project Settings > Script Properties
 
+---
+
+### Automated Failure Recovery System
+
+**Overview:**
+The system includes automated retry logic to handle transient failures (Drive API errors, timeout issues, incomplete audits) without manual intervention.
+
+#### How It Works
+
+**1. Checkpoint & Resume (During Morning Audits)**
+- **Function:** `resumeTimedOutBatches()`
+- **Trigger:** Daily at 9:15 AM EST (before summary email at 9:30 AM)
+- **Purpose:** Catches configs that hit the 6-minute Apps Script timeout during morning batches
+- **Mechanism:** 
+  - Each batch saves checkpoint state to Script Properties when processing configs
+  - If timeout occurs mid-batch, checkpoint records which configs remain
+  - At 9:15 AM, resume function checks for active checkpoints
+  - Reruns only the remaining configs from timed-out batches
+  - Clears checkpoint after successful completion
+
+**2. Failed Config Detection & Rerun**
+- **Function:** `rerunFailedConfigs_Automated()`
+- **Current Status:** ⚠️ Function exists but trigger not currently installed
+- **Intended Timing:** ~1 hour after morning audits (suggested: 10:00 AM EST)
+- **Purpose:** Detects and reruns configs with error statuses from morning audit runs
+- **What It Catches:**
+  - Drive API errors ("Service error: Drive")
+  - Incomplete audits (config present in audit batch but no result recorded)
+  - Failed status messages (timeout, error, failed, not started, in progress)
+  - Missing configs (no run recorded, no completion logged)
+
+#### Error Status Detection Logic
+
+The `isRerunnableFailureStatus_()` helper function identifies configs needing rerun by checking:
+
+```javascript
+// Returns true if config needs rerun
+if (!result) return true;                              // No result recorded
+if (result.failed === true) return true;               // Explicit failure flag
+const status = String(result.status || '').toLowerCase();
+return status.includes('failed') ||                     // Contains "failed"
+       status.includes('error') ||                      // Contains "error" (catches Drive errors)
+       status.includes('max timeout retries') ||        // Exhausted retry attempts
+       status.includes('timed out') ||                  // Timeout occurred
+       status.includes('not started') ||                // Never began execution
+       status.includes('in progress') ||                // Stuck in running state
+       status.includes('no run recorded') ||            // Missing from batch history
+       status.includes('no completion logged');         // Started but never finished
+```
+
+#### Batch State Tracking
+
+**Storage Mechanism:**
+- **Script Properties Keys:**
+  - `AUDIT_RUN_LIST_V1`: JSON array of today's batch IDs
+  - `AUDIT_RUN_STATE_V1_<batchId>`: Individual batch state with results array
+- **Result Object Structure:**
+  ```javascript
+  {
+    name: 'WRI01',
+    status: 'Success' | 'Error during audit: Service error: Drive' | 'Timed out',
+    flaggedCount: 12,
+    emailSent: true,
+    failed: false
+  }
+  ```
+
+**How States Are Used:**
+1. Each batch execution stores results array in Script Properties
+2. Resume/rerun functions read all batch states from today's runs
+3. Latest result per config is extracted (handles multiple attempts)
+4. Status strings are analyzed to determine if rerun needed
+5. Configs meeting failure criteria are queued for rerun
+
+#### Common Failure Scenarios
+
+**Drive API Transient Errors:**
+- **Symptom:** Config status shows "Error during audit: Service error: Drive"
+- **Cause:** Google Drive API temporarily unavailable or rate-limited
+- **Recovery:** Automated rerun typically succeeds on second attempt
+- **Example:** WRI01 config failed Feb 11 and Mar 4 with Drive errors, manual reruns succeeded immediately
+
+**Timeout During Merge:**
+- **Symptom:** Checkpoint exists with configs in "remaining" list
+- **Cause:** Large file merge exceeded 6-minute script execution limit
+- **Recovery:** Resume function at 9:15 AM picks up remaining configs
+- **Prevention:** Batch size set to 2 configs to minimize timeout risk
+
+**Schema Validation Errors:**
+- **Symptom:** Config status shows "Missing required column: Campaign"
+- **Cause:** Report file format changed or corrupted
+- **Recovery:** Not retried (requires manual intervention to fix report format)
+- **Detection:** Schema validation runs before merge, saves error status
+
+#### Monitoring & Logs
+
+**Execution Logs (Apps Script):**
+- Search for `[RERUN-AUTO]` tag to track automated rerun activity
+- Search for `[RESUME]` tag to track checkpoint resume operations
+- Example log output:
+  ```
+  [RERUN-AUTO] Starting automated rerun check
+  [RERUN-AUTO] Found 1 incomplete configs: WRI01
+  [RERUN-AUTO] Rerunning 1 failed configs
+  [RERUN-AUTO] Automated rerun completed. Updating summary...
+  ```
+
+**Script Properties (State Inspection):**
+1. Extensions > Apps Script > Project Settings > Script Properties
+2. Look for keys prefixed with `AUDIT_RUN_STATE_V1_`
+3. Parse JSON to see individual config results and statuses
+
+**Health Check Email (Daily 5:04 AM):**
+- Includes summary of yesterday's audit runs
+- Reports configs with error statuses
+- Useful for identifying patterns (recurring Drive errors, etc.)
+
+#### Enabling Automated Rerun (Currently Disabled)
+
+**To activate the automated rerun system:**
+
+1. **Open Apps Script Editor:**
+   - Admin Spreadsheet > Extensions > Apps Script
+
+2. **Install Rerun Trigger:**
+   - Option A: Add to `installAllAutomationTriggers()` function around line 5020:
+   ```javascript
+   // === Automated rerun for failed configs ===
+   if (shouldInclude('automatedRerun', ['rerunFailedConfigs_Automated'])) {
+       removeHandlers(['rerunFailedConfigs_Automated'], 'automated rerun trigger');
+       createTrigger('rerunFailedConfigs_Automated', 
+           trig => trig.timeBased().atHour(10).nearMinute(0).everyDays(1).create(), 
+           'automated config rerun trigger (10:00 AM)');
+   }
+   ```
+   - Option B: Create trigger manually:
+     1. Apps Script Editor > Triggers (clock icon in left sidebar)
+     2. Click "+ Add Trigger" (bottom right)
+     3. Function: `rerunFailedConfigs_Automated`
+     4. Event source: Time-driven
+     5. Type: Day timer
+     6. Time of day: 10am to 11am
+     7. Click "Save"
+
+3. **Test the Trigger:**
+   - Manually run `rerunFailedConfigs_Automated` from Apps Script Editor
+   - Check execution log for `[RERUN-AUTO]` messages
+   - Verify it detects configs with error statuses
+
+**Why 10:00 AM?**
+- Morning audits run 8:00-9:00 AM
+- Resume trigger at 9:15 AM catches timeouts
+- Summary email at 9:30 AM
+- Rerun at 10:00 AM gives 1 hour buffer for transient errors to clear
+- Results still available same morning for stakeholder follow-up
+
+#### Best Practices
+
+**For Admins:**
+- Monitor `[RERUN-AUTO]` logs to track rerun frequency
+- If same config repeatedly fails, investigate root cause (not transient)
+- Consider manual intervention if Drive errors persist for specific folder/file
+- Review Health Check emails for patterns in failure types
+
+**For Troubleshooting:**
+- Check Script Properties for batch states if config status unclear
+- Use Admin Controls > Batch Time Audit to see execution duration trends
+- If enabling automated rerun, test with staging mode first to verify behavior
+- Manual reruns via Admin Controls menu always available as backup
+
+---
+
 ### Batch Configuration
 
 **Current Setting:** 2 configs per batch (BATCH_SIZE = 2)
@@ -1387,7 +1559,7 @@ Thresholds are **minimum volume requirements**, not percentage tolerances. A row
 **Why Batching:**
 - Prevents timeout errors (6-minute Apps Script limit)
 - Spreads load throughout the day
-- Allows retry logic for failed configs
+- Enables automated retry logic for failed configs
 
 **How Batches Are Compiled:**
 
