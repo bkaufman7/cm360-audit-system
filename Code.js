@@ -72,6 +72,13 @@ const EMAIL_BODY_BYTE_LIMIT = 90000; // ~90KB
 // Increased to 3 to stay under Apps Script's 20-trigger limit
 const BATCH_SIZE = 3;
 
+// Central Hub flagged export contract constants
+const HUB_EXPORT_TAB_NAME = 'CM360_Flagged_Export';
+const HUB_EXPORT_SPREADSHEET_ID_PROPERTY = 'HUB_EXPORT_SPREADSHEET_ID';
+const HUB_EXPORT_TIMEZONE = 'America/Chicago';
+const HUB_SOURCE_SYSTEM = 'CM360 Audit System';
+const HUB_SOURCE_PROJECT = 'CM360 Audit System';
+
 // Dedicated single-config batches (by config name). Override via Script Property DEDICATED_BATCH_CONFIGS (CSV).
 const DEDICATED_BATCH_CONFIGS = (function () {
 	try {
@@ -1380,20 +1387,395 @@ function findLatestMergedReportUrl_(config) {
 	}
 }
 
+// Calculate deterministic Row ID using SHA256 of composite key
+function calculateRowId_(configName, eventDate, placementId, impressions, clicks) {
+	const key = [
+		String(configName || ''),
+		String(eventDate || ''),
+		String(placementId || ''),
+		String(impressions || 0),
+		String(clicks || 0)
+	].join('|');
+	const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, key);
+	return digest.map(b => {
+		const byte = b < 0 ? b + 256 : b;
+		const h = byte.toString(16);
+		return ('0' + h).slice(-2);
+	}).join('');
+}
+
+function getHubExportSpreadsheetId_() {
+	try {
+		const p = PropertiesService.getScriptProperties().getProperty(HUB_EXPORT_SPREADSHEET_ID_PROPERTY);
+		if (p && String(p).trim()) return String(p).trim();
+	} catch (e) {}
+	return EXTERNAL_CONFIG_SHEET_ID ? String(EXTERNAL_CONFIG_SHEET_ID).trim() : '';
+}
+
+function getHubExportHeaders_() {
+	return [
+		// Required columns (exact names)
+		'Event Date',
+		'Source System',
+		'Source Project',
+		'Config ID',
+		'Advertiser',
+		'Campaign',
+		'Placement ID',
+		'Placement Name',
+		'Issue Flags',
+		'Impressions',
+		'Clicks',
+		'Delivery Timestamp',
+		'Source Email Subject',
+		'Row ID',
+		// Recommended columns
+		'Source Email Link',
+		'Source File Name',
+		'Source File Link',
+		'Network ID',
+		'Network Name',
+		'Placement Start Date',
+		'Placement End Date',
+		'Ad Type',
+		'Creative',
+		'Placement Pixel Size',
+		'Creative Pixel Size',
+		'Export Timestamp'
+	];
+}
+
+function formatHubDate_(value) {
+	try {
+		const d = value instanceof Date ? value : new Date(value);
+		if (!isNaN(d.getTime())) return Utilities.formatDate(d, HUB_EXPORT_TIMEZONE, 'yyyy-MM-dd');
+	} catch (e) {}
+	const s = String(value || '').trim();
+	const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+	return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+}
+
+function formatHubTimestamp_(value) {
+	const d = value instanceof Date ? value : new Date(value || new Date());
+	return Utilities.formatDate(d, HUB_EXPORT_TIMEZONE, 'yyyy-MM-dd HH:mm:ss');
+}
+
+function sanitizePlainValue_(v) {
+	if (v === null || typeof v === 'undefined') return '';
+	const s = String(v);
+	// Keep data rows formula-free in Sheets.
+	if (/^[=+\-@]/.test(s)) return "'" + s;
+	return s;
+}
+
+function normalizeIssueFlags_(value) {
+	return String(value || '')
+		.split(/[;,]/)
+		.map(s => s.trim())
+		.filter(Boolean)
+		.join(', ');
+}
+
+function findMergedReportForDate_(config, targetDateYmd) {
+	try {
+		if (!config || !Array.isArray(config.mergedFolderPath)) return null;
+		const folder = getDriveFolderByPathReadOnly_(config.mergedFolderPath);
+		if (!folder) return null;
+		const safeConfig = String(config.name || '').replace(/\s+/g, '').toUpperCase();
+		const fileName = `CM360_Merged_Audit_${safeConfig}_${targetDateYmd}`;
+		const files = folder.getFilesByName(fileName);
+		if (!files.hasNext()) return null;
+		const file = files.next();
+		return { id: file.getId(), name: file.getName(), url: file.getUrl() };
+	} catch (e) {
+		Logger.log(`findMergedReportForDate_ error (${config && config.name ? config.name : 'Unknown'}): ${e.message}`);
+		return null;
+	}
+}
+
+function collectFlaggedRowsForDate_(targetDateYmd) {
+	const configs = getAuditConfigs();
+	const rows = [];
+	let skippedMissingIds = 0;
+	configs.forEach(config => {
+		try {
+			const merged = findMergedReportForDate_(config, targetDateYmd);
+			if (!merged) return;
+			const ss = SpreadsheetApp.openById(merged.id);
+			const sh = ss.getSheets()[0];
+			const data = sh.getDataRange().getValues();
+			if (!data || data.length < 2) return;
+			const headers = data[0];
+			const getIdx = (name) => {
+				const needle = headerNormalize(name);
+				for (let i = 0; i < headers.length; i++) {
+					if (headerNormalize(headers[i]) === needle) return i;
+				}
+				return -1;
+			};
+			const idx = {
+				date: getIdx('Date'),
+				advertiser: getIdx('Advertiser'),
+				campaign: getIdx('Campaign'),
+				placementId: getIdx('Placement ID'),
+				placementName: getIdx('Placement'),
+				flags: getIdx('Flag(s)'),
+				impressions: getIdx('Impressions'),
+				clicks: getIdx('Clicks'),
+				startDate: getIdx('Placement Start Date'),
+				endDate: getIdx('Placement End Date'),
+				adType: getIdx('Ad Type'),
+				creative: getIdx('Creative'),
+				placementPixel: getIdx('Placement Pixel Size'),
+				creativePixel: getIdx('Creative Pixel Size'),
+				networkId: getIdx('Network ID'),
+				networkName: getIdx('Network Name')
+			};
+
+			for (let r = 1; r < data.length; r++) {
+				const row = data[r];
+				const flags = normalizeIssueFlags_(idx.flags >= 0 ? row[idx.flags] : '');
+				if (!flags) continue; // flagged rows only
+
+				const configId = String(config.name || '').trim();
+				const placementId = String(idx.placementId >= 0 ? row[idx.placementId] : '').trim();
+				if (!configId || !placementId) {
+					skippedMissingIds++;
+					continue;
+				}
+
+				const eventDate = formatHubDate_(idx.date >= 0 ? row[idx.date] : targetDateYmd) || targetDateYmd;
+				const impressionsRaw = idx.impressions >= 0 ? row[idx.impressions] : '';
+				const clicksRaw = idx.clicks >= 0 ? row[idx.clicks] : '';
+				const impressions = impressionsRaw === '' || impressionsRaw === null ? '' : Number(impressionsRaw);
+				const clicks = clicksRaw === '' || clicksRaw === null ? '' : Number(clicksRaw);
+				const rowId = calculateRowId_(configId, eventDate, placementId, impressions, clicks);
+
+				rows.push({
+					eventDate,
+					sourceSystem: HUB_SOURCE_SYSTEM,
+					sourceProject: HUB_SOURCE_PROJECT,
+					configId,
+					advertiser: sanitizePlainValue_(idx.advertiser >= 0 ? row[idx.advertiser] : ''),
+					campaign: sanitizePlainValue_(idx.campaign >= 0 ? row[idx.campaign] : ''),
+					placementId: sanitizePlainValue_(placementId),
+					placementName: sanitizePlainValue_(idx.placementName >= 0 ? row[idx.placementName] : ''),
+					issueFlags: sanitizePlainValue_(flags),
+					impressions: impressions,
+					clicks: clicks,
+					sourceEmailLink: '',
+					sourceFileName: merged.name,
+					sourceFileLink: merged.url,
+					networkId: sanitizePlainValue_(idx.networkId >= 0 ? row[idx.networkId] : ''),
+					networkName: sanitizePlainValue_(idx.networkName >= 0 ? row[idx.networkName] : ''),
+					placementStartDate: formatHubDate_(idx.startDate >= 0 ? row[idx.startDate] : ''),
+					placementEndDate: formatHubDate_(idx.endDate >= 0 ? row[idx.endDate] : ''),
+					adType: sanitizePlainValue_(idx.adType >= 0 ? row[idx.adType] : ''),
+					creative: sanitizePlainValue_(idx.creative >= 0 ? row[idx.creative] : ''),
+					placementPixelSize: sanitizePlainValue_(idx.placementPixel >= 0 ? row[idx.placementPixel] : ''),
+					creativePixelSize: sanitizePlainValue_(idx.creativePixel >= 0 ? row[idx.creativePixel] : ''),
+					rowId
+				});
+			}
+		} catch (e) {
+			Logger.log(`collectFlaggedRowsForDate_ error (${config && config.name ? config.name : 'Unknown'}): ${e.message}`);
+		}
+	});
+	if (skippedMissingIds > 0) {
+		Logger.log(`[Hub Export] Skipped ${skippedMissingIds} flagged row(s) missing Config ID or Placement ID`);
+	}
+	return rows;
+}
+
+function buildHubExportValues_(rows, targetDateYmd, summarySubject, deliveryTimestamp, exportTimestamp) {
+	const values = rows.map(r => [
+		r.eventDate,
+		HUB_SOURCE_SYSTEM,
+		HUB_SOURCE_PROJECT,
+		r.configId,
+		r.advertiser,
+		r.campaign,
+		r.placementId,
+		r.placementName,
+		r.issueFlags,
+		r.impressions,
+		r.clicks,
+		deliveryTimestamp,
+		summarySubject,
+		r.rowId,
+		r.sourceEmailLink,
+		r.sourceFileName,
+		r.sourceFileLink,
+		r.networkId,
+		r.networkName,
+		r.placementStartDate,
+		r.placementEndDate,
+		r.adType,
+		r.creative,
+		r.placementPixelSize,
+		r.creativePixelSize,
+		exportTimestamp
+	]);
+	return values;
+}
+
+function publishHubFlaggedExportForDate_(targetDateYmd, errorCount) {
+	const headers = getHubExportHeaders_();
+	const rows = collectFlaggedRowsForDate_(targetDateYmd);
+	const deliveryTimestamp = formatHubTimestamp_(new Date());
+	const exportTimestamp = formatHubTimestamp_(new Date());
+	const summarySubject = `CM360 Daily Audit Summary (${targetDateYmd}) — ${rows.length} flagged, ${Number(errorCount || 0)} errors`;
+	const values = buildHubExportValues_(rows, targetDateYmd, summarySubject, deliveryTimestamp, exportTimestamp);
+
+	const spreadsheetId = getHubExportSpreadsheetId_();
+	let hubUrl = '';
+	if (spreadsheetId) {
+		try {
+			const ss = openSpreadsheetById_(spreadsheetId);
+			let tab = ss.getSheetByName(HUB_EXPORT_TAB_NAME);
+			if (!tab) tab = ss.insertSheet(HUB_EXPORT_TAB_NAME);
+			tab.clear();
+			tab.getRange(1, 1, 1, headers.length).setValues([headers]);
+			if (values.length > 0) {
+				tab.getRange(2, 1, values.length, headers.length).setValues(values);
+			}
+			tab.setFrozenRows(1);
+			try {
+				tab.getDataRange().breakApart();
+			} catch (e) {}
+			SpreadsheetApp.flush();
+			hubUrl = `${ss.getUrl()}#gid=${tab.getSheetId()}`;
+			Logger.log(`[Hub Export] Published ${values.length} row(s) to tab ${HUB_EXPORT_TAB_NAME}`);
+		} catch (e) {
+			Logger.log(`[Hub Export] Failed to publish tab export: ${e.message}`);
+		}
+	} else {
+		Logger.log('[Hub Export] HUB_EXPORT_SPREADSHEET_ID not set and EXTERNAL_CONFIG_SHEET_ID unavailable; skipping tab publish');
+	}
+
+	return {
+		targetDateYmd,
+		rowCount: values.length,
+		headers,
+		values,
+		summarySubject,
+		hubUrl
+	};
+}
+
+function csvEscape_(v) {
+	const s = String(v === null || typeof v === 'undefined' ? '' : v);
+	if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+	return s;
+}
+
+function createHubFlaggedExportCsvBlob_(payload) {
+	const lines = [];
+	lines.push(payload.headers.map(csvEscape_).join(','));
+	payload.values.forEach(r => lines.push(r.map(csvEscape_).join(',')));
+	const csv = lines.join('\r\n');
+	const filename = `CM360_Flagged_Export_${payload.targetDateYmd}.csv`;
+	return Utilities.newBlob(csv, 'text/csv', filename);
+}
+
+// Public utility: regenerate a single day's export into hub tab + admin CSV email.
+function regenerateFlaggedExportByDate(dateYmd) {
+	const ymd = String(dateYmd || '').trim();
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+		throw new Error('regenerateFlaggedExportByDate expects YYYY-MM-DD');
+	}
+	const payload = publishHubFlaggedExportForDate_(ymd, 0);
+	const csvBlob = createHubFlaggedExportCsvBlob_(payload);
+	safeSendEmail({
+		to: ADMIN_EMAIL,
+		subject: `CM360 Flagged Export Backfill (${ymd})`,
+		plainBody: `Backfill export generated for ${ymd}. Rows=${payload.rowCount}. ${payload.hubUrl || ''}`,
+		attachments: [csvBlob]
+	}, 'Hub Export Backfill');
+	return payload;
+}
+
+// Public utility: generate a 60-day backfill by date, one CSV per day to admin.
+function backfillFlaggedExportLast60Days() {
+	const today = new Date();
+	const out = [];
+	for (let i = 0; i < 60; i++) {
+		const d = new Date(today);
+		d.setDate(today.getDate() - i);
+		const ymd = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+		const payload = publishHubFlaggedExportForDate_(ymd, 0);
+		const csvBlob = createHubFlaggedExportCsvBlob_(payload);
+		safeSendEmail({
+			to: ADMIN_EMAIL,
+			subject: `CM360 Flagged Export Backfill (${ymd})`,
+			plainBody: `Rows=${payload.rowCount}. ${payload.hubUrl || ''}`,
+			attachments: [csvBlob]
+		}, `Hub Export Backfill ${ymd}`);
+		out.push({ date: ymd, rows: payload.rowCount });
+	}
+	return out;
+}
+
+// Retrieve latest report URL for a config (stored during audit)
+function getLatestReportUrl_(configName) {
+	try {
+		const props = PropertiesService.getScriptProperties();
+		const key = `CM360_LATEST_REPORT_URL_${configName}`;
+		return props.getProperty(key) || '';
+	} catch (e) {
+		return '';
+	}
+}
+
+// Store latest report URL for a config (called during audit)
+function setLatestReportUrl_(configName, url) {
+	try {
+		const props = PropertiesService.getScriptProperties();
+		const key = `CM360_LATEST_REPORT_URL_${configName}`;
+		props.setProperty(key, String(url || ''));
+	} catch (e) {
+		Logger.log(`setLatestReportUrl_ error (${configName}): ${e.message}`);
+	}
+}
+
 function sendDailySummaryEmail(results) {
 	const distribution = [ADMIN_EMAIL, 'bmuller@horizonmedia.com, bkaufman@horizonmedia.com, ewarburton@horizonmedia.com'].filter(Boolean).join(', ');
 	const content = buildSummaryEmailContent_(results, { strictLatestLink: true });
+
+	// Publish contract-compliant flagged export to central hub tab and create CSV attachment.
+	let csvBlob = null;
+	let exportPayload = null;
 	try {
-		safeSendEmail({
+		const subjectDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+		const errorCount = Array.isArray(results)
+			? results.filter(r => /error/i.test(String((r && r.status) || ''))).length
+			: 0;
+		exportPayload = publishHubFlaggedExportForDate_(subjectDate, errorCount);
+		csvBlob = createHubFlaggedExportCsvBlob_(exportPayload);
+		Logger.log(`[Hub Export] Ready: rows=${exportPayload.rowCount}, tab=${exportPayload.hubUrl || 'not published'}`);
+	} catch (exportErr) {
+		Logger.log(`[Hub Export] Failed daily export generation: ${exportErr.message}`);
+	}
+	
+	// Send summary email with CSV attachment (never XLSX-only).
+	try {
+		const mailOpts = {
 			to: distribution,
 			subject: content.subject,
 			plainBody: content.plainText,
 			htmlBody: content.htmlBody
-		}, 'Daily Summary');
-		Logger.log(`[EMAIL] Summary email sent to: ${distribution}`);
+		};
+		
+		if (csvBlob) {
+			mailOpts.attachments = [csvBlob];
+		}
+		
+		safeSendEmail(mailOpts, 'Daily Summary');
+		Logger.log(`[EMAIL] Summary email sent to: ${distribution}${csvBlob ? ' (with flagged export CSV)' : ''}`);
 	} catch (err) {
 		Logger.log(`❌ Failed to send summary email: ${err.message}`);
 	}
+	
 	// Persist current counts for next day's delta
 	try {
 		const countsMap = {};

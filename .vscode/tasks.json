@@ -1,0 +1,20 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "git commit and push docs",
+			"type": "shell",
+			"command": "git add ARCHITECTURE_MAP_cm360-audit-system.md PROJECT_INTELLIGENCE_DOSSIER.md && git commit -m \"Add ARCHITECTURE_MAP and PROJECT_INTELLIGENCE_DOSSIER\" && git push && clasp push"
+		},
+		{
+			"label": "git and clasp push",
+			"type": "shell",
+			"command": "git add ARCHITECTURE_MAP_cm360-audit-system.md PROJECT_INTELLIGENCE_DOSSIER.md; git commit -m 'Add ARCHITECTURE_MAP and PROJECT_INTELLIGENCE_DOSSIER'; git push; clasp push"
+		},
+		{
+			"label": "push to remote",
+			"type": "shell",
+			"command": "git push; clasp push"
+		}
+	]
+}
